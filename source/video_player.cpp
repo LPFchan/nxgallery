@@ -8,6 +8,7 @@ extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
+#include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
 
@@ -39,6 +40,7 @@ struct VideoPlayer::Impl {
     std::atomic<std::uint64_t> decoded_frames{};
     std::atomic<std::uint64_t> playback_position_ms{};
     std::atomic<std::uint64_t> playback_duration_ms{};
+    std::atomic<SDL_AudioDeviceID> audio_device{0};
     mutable std::mutex mutex;
     std::condition_variable wake;
     std::vector<std::uint8_t> pending_pixels;
@@ -50,6 +52,29 @@ struct VideoPlayer::Impl {
     void set_message(std::string value) {
         std::lock_guard<std::mutex> lock(mutex);
         message = std::move(value);
+    }
+
+    // Drains every decoded audio frame in the codec into the SDL queue as
+    // interleaved S16 stereo.
+    void queue_audio(AVCodecContext *audio_codec, SwrContext *resampler,
+                     AVFrame *audio_frame) {
+        const SDL_AudioDeviceID device = audio_device.load();
+        while (!stop_requested &&
+               avcodec_receive_frame(audio_codec, audio_frame) >= 0) {
+            const int capacity = swr_get_out_samples(resampler,
+                                                     audio_frame->nb_samples);
+            if (capacity <= 0) continue;
+            std::vector<std::uint8_t> samples(
+                static_cast<std::size_t>(capacity) * 4U);
+            std::uint8_t *outputs[] = {samples.data()};
+            const int converted = swr_convert(
+                resampler, outputs, capacity,
+                audio_frame->extended_data, audio_frame->nb_samples);
+            if (converted > 0 && device != 0) {
+                SDL_QueueAudio(device, samples.data(),
+                               static_cast<Uint32>(converted) * 4U);
+            }
+        }
     }
 
     void decode(MediaItem media) {
@@ -68,7 +93,18 @@ struct VideoPlayer::Impl {
         SwsContext *scaler = nullptr;
         AVPacket *packet = nullptr;
         AVFrame *frame = nullptr;
+        AVCodecContext *audio_codec = nullptr;
+        SwrContext *resampler = nullptr;
+        AVFrame *audio_frame = nullptr;
         auto finish = [&] {
+            const SDL_AudioDeviceID device = audio_device.exchange(0);
+            if (device != 0) {
+                SDL_ClearQueuedAudio(device);
+                SDL_CloseAudioDevice(device);
+            }
+            if (audio_frame != nullptr) av_frame_free(&audio_frame);
+            if (resampler != nullptr) swr_free(&resampler);
+            if (audio_codec != nullptr) avcodec_free_context(&audio_codec);
             if (frame != nullptr) av_frame_free(&frame);
             if (packet != nullptr) av_packet_free(&packet);
             if (scaler != nullptr) sws_freeContext(scaler);
@@ -135,6 +171,63 @@ struct VideoPlayer::Impl {
             std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=buffer_failed\n");
             finish();
             return;
+        }
+
+        // Audio is best-effort: playback stays video-only when any part of
+        // the audio pipeline cannot start.
+        const int audio_index = av_find_best_stream(
+            format, AVMEDIA_TYPE_AUDIO, -1, stream_index, nullptr, 0);
+        if (audio_index >= 0) {
+            AVStream *audio_stream = format->streams[audio_index];
+            const AVCodec *audio_decoder =
+                avcodec_find_decoder(audio_stream->codecpar->codec_id);
+            audio_codec = audio_decoder == nullptr
+                ? nullptr : avcodec_alloc_context3(audio_decoder);
+            bool audio_ready = audio_codec != nullptr &&
+                avcodec_parameters_to_context(audio_codec, audio_stream->codecpar) >= 0 &&
+                avcodec_open2(audio_codec, audio_decoder, nullptr) >= 0 &&
+                audio_codec->sample_rate > 0;
+            if (audio_ready) {
+                AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+                audio_ready = swr_alloc_set_opts2(
+                    &resampler, &stereo, AV_SAMPLE_FMT_S16,
+                    audio_codec->sample_rate, &audio_codec->ch_layout,
+                    audio_codec->sample_fmt, audio_codec->sample_rate,
+                    0, nullptr) >= 0 && swr_init(resampler) >= 0;
+            }
+            if (audio_ready && SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+                audio_ready = SDL_InitSubSystem(SDL_INIT_AUDIO) == 0;
+            }
+            if (audio_ready) {
+                audio_frame = av_frame_alloc();
+                audio_ready = audio_frame != nullptr;
+            }
+            if (audio_ready) {
+                SDL_AudioSpec desired{};
+                desired.freq = audio_codec->sample_rate;
+                desired.format = AUDIO_S16SYS;
+                desired.channels = 2;
+                desired.samples = 2048;
+                SDL_AudioSpec obtained{};
+                const SDL_AudioDeviceID device =
+                    SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
+                audio_ready = device != 0;
+                if (audio_ready) {
+                    audio_device = device;
+                    SDL_PauseAudioDevice(device, is_paused ? 1 : 0);
+                }
+            }
+            if (audio_ready) {
+                std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_ready rate=%d\n",
+                            audio_codec->sample_rate);
+            } else {
+                std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_unavailable codec=%d reason=%s\n",
+                            static_cast<int>(audio_stream->codecpar->codec_id),
+                            SDL_GetError());
+                if (audio_frame != nullptr) av_frame_free(&audio_frame);
+                if (resampler != nullptr) swr_free(&resampler);
+                if (audio_codec != nullptr) avcodec_free_context(&audio_codec);
+            }
         }
 
         set_message(is_paused ? "Paused" : "Playing");
@@ -211,8 +304,19 @@ struct VideoPlayer::Impl {
                         std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame\n");
                     }
                 }
+            } else if (audio_device.load() != 0 &&
+                       packet->stream_index == audio_index &&
+                       avcodec_send_packet(audio_codec, packet) >= 0) {
+                queue_audio(audio_codec, resampler, audio_frame);
             }
             av_packet_unref(packet);
+        }
+        if (!stop_requested) {
+            // Let the queued audio tail play out before tearing the device down.
+            while (!stop_requested && !is_paused && audio_device.load() != 0 &&
+                   SDL_GetQueuedAudioSize(audio_device.load()) > 0) {
+                SDL_Delay(30);
+            }
         }
         if (!stop_requested) {
             if (playback_duration_ms > 0) playback_position_ms = playback_duration_ms.load();
@@ -245,6 +349,8 @@ void VideoPlayer::play(const MediaItem &media) {
 void VideoPlayer::toggle_pause() {
     if (!impl_->is_active) return;
     impl_->is_paused = !impl_->is_paused.load();
+    const SDL_AudioDeviceID device = impl_->audio_device.load();
+    if (device != 0) SDL_PauseAudioDevice(device, impl_->is_paused ? 1 : 0);
     impl_->set_message(impl_->is_paused ? "Paused" : "Playing");
     std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=%s\n",
                 impl_->is_paused ? "paused" : "playing");

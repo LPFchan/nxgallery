@@ -85,6 +85,16 @@ constexpr std::int32_t kDialogRadius = 6;
 // Touch: a press that travels at least this far before release is a swipe.
 constexpr std::int32_t kSwipeThreshold = 60;
 
+// Screen transitions: ~200 ms at 60 FPS. Grid<->Viewer and viewer browsing
+// dip through black; dialogs rise this many pixels while their dim fades in.
+constexpr std::uint32_t kTransitionFrames = 12;
+constexpr std::int32_t kDialogRiseHeight = 26;
+
+double ease_out_cubic(double t) {
+    const double inverse = 1.0 - t;
+    return 1.0 - inverse * inverse * inverse;
+}
+
 enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back };
 
 void render_outline(pu::ui::render::Renderer::Ref &drawer, pu::ui::Color color,
@@ -151,6 +161,7 @@ public:
         text_slot_ = 0;
         hint_zones_.clear();
         ++pulse_frame_;
+        advance_transition();
         switch (controller_.screen()) {
             case Screen::Grid: render_grid(drawer); break;
             case Screen::Viewer: render_viewer(drawer); break;
@@ -158,6 +169,7 @@ public:
             case Screen::Sending: render_viewer(drawer); render_sending(drawer); break;
             case Screen::Result: render_viewer(drawer); render_result(drawer); break;
         }
+        render_screen_fade(drawer);
         for (std::size_t index = text_slot_; index < text_slots_.size(); ++index) {
             pu::ui::render::DeleteTexture(text_slots_[index].texture);
         }
@@ -255,6 +267,53 @@ private:
         }
     }
 
+    // Restarts the transition clock whenever the visible screen changes, or
+    // the viewer moves to another capture, and eases progress toward 1.
+    void advance_transition() {
+        const Screen screen = controller_.screen();
+        const std::size_t media_index = controller_.selected_media_index();
+        if (screen != shown_screen_) {
+            transition_from_ = shown_screen_;
+            shown_screen_ = screen;
+            transition_frame_ = 0;
+        } else if (screen == Screen::Viewer && media_index != shown_media_index_) {
+            transition_from_ = Screen::Viewer;
+            transition_frame_ = 0;
+        }
+        shown_media_index_ = media_index;
+        transition_t_ = ease_out_cubic(
+            static_cast<double>(transition_frame_) / kTransitionFrames);
+        if (transition_frame_ < kTransitionFrames) ++transition_frame_;
+    }
+
+    // Fullscreen dip-through-black for Grid<->Viewer and viewer browsing.
+    // Dialog screens animate inside their own render functions instead.
+    void render_screen_fade(pu::ui::render::Renderer::Ref &drawer) {
+        if (transition_t_ >= 1.0) return;
+        const bool fades =
+            (shown_screen_ == Screen::Grid && transition_from_ == Screen::Viewer) ||
+            (shown_screen_ == Screen::Viewer &&
+             (transition_from_ == Screen::Grid || transition_from_ == Screen::Viewer));
+        if (!fades) return;
+        const std::uint8_t alpha =
+            static_cast<std::uint8_t>((1.0 - transition_t_) * 255.0);
+        drawer->RenderRectangleFill({0, 0, 0, alpha}, 0, 0, kWidth, kHeight);
+    }
+
+    // How far a dialog still sits below its resting position this frame.
+    std::int32_t dialog_rise() const {
+        return static_cast<std::int32_t>((1.0 - transition_t_) * kDialogRiseHeight);
+    }
+
+    // The dim layer fades in only when a dialog opens over Grid or Viewer;
+    // between two dialog screens it stays opaque so the backdrop never flashes.
+    double dim_progress() const {
+        const bool from_dialog = transition_from_ == Screen::ChatPicker ||
+            transition_from_ == Screen::Sending ||
+            transition_from_ == Screen::Result;
+        return from_dialog ? 1.0 : transition_t_;
+    }
+
     // Stock Horizon selections breathe between two cyans on a ~1.5 s cycle.
     pu::ui::Color pulse_color() const {
         const std::uint32_t phase = pulse_frame_ % 90U;
@@ -325,7 +384,9 @@ private:
     void dialog_face(pu::ui::render::Renderer::Ref &drawer, std::uint8_t dim_alpha,
                      std::int32_t x, std::int32_t y, std::int32_t width,
                      std::int32_t height, std::int32_t button_row_y) {
-        drawer->RenderRectangleFill({0, 0, 0, dim_alpha}, 0, 0, kWidth, kHeight);
+        drawer->RenderRectangleFill(
+            {0, 0, 0, static_cast<std::uint8_t>(dim_alpha * dim_progress())},
+            0, 0, kWidth, kHeight);
         drawer->RenderRoundedRectangleFill(kDialogFace, x, y, width, height, kDialogRadius);
         drawer->RenderRectangleFill(kDialogRule, x, button_row_y, width, 1);
     }
@@ -456,24 +517,25 @@ private:
     }
 
     void render_chat_picker(pu::ui::render::Renderer::Ref &drawer) {
-        dialog_face(drawer, 140, kPickerX, kPickerY, kPickerWidth, kPickerHeight,
-                    kPickerButtonY);
-        text_center(drawer, "Share to Telegram", 25, kInk, kWidth / 2, 128);
+        const std::int32_t rise = dialog_rise();
+        dialog_face(drawer, 140, kPickerX, kPickerY + rise, kPickerWidth,
+                    kPickerHeight, kPickerButtonY + rise);
+        text_center(drawer, "Share to Telegram", 25, kInk, kWidth / 2, 128 + rise);
         if (!status_.empty()) {
-            text_center(drawer, clipped(status_, 70), 18, kMuted, kWidth / 2, 166);
+            text_center(drawer, clipped(status_, 70), 18, kMuted, kWidth / 2, 166 + rise);
         }
         const auto &chats = controller_.chats();
         if (chats.empty()) {
-            text_center(drawer, "No destinations found.", 23, kInk, kWidth / 2, 300);
+            text_center(drawer, "No destinations found.", 23, kInk, kWidth / 2, 300 + rise);
             text_center(drawer, "Message the bot or add a chat=ID|Title entry.",
-                        18, kMuted, kWidth / 2, 344);
+                        18, kMuted, kWidth / 2, 344 + rise);
         }
         const std::size_t selected = controller_.selected_chat_index();
         const std::size_t start = selected >= kPickerVisibleRows
             ? selected - (kPickerVisibleRows - 1) : 0;
         for (std::size_t row = 0; row < kPickerVisibleRows && start + row < chats.size(); ++row) {
             const std::size_t index = start + row;
-            const std::int32_t row_y = kPickerRowY +
+            const std::int32_t row_y = kPickerRowY + rise +
                 static_cast<std::int32_t>(row) * kPickerRowStride;
             if (index == selected) {
                 drawer->RenderRoundedRectangleFill(kRowFace, kPickerRowX, row_y,
@@ -496,11 +558,11 @@ private:
                        kPickerRowX + kPickerRowWidth - 16, row_y + 17);
         }
         const std::int32_t third = kPickerWidth / 3;
-        drawer->RenderRectangleFill(kDialogRule, kPickerX + third, kPickerButtonY,
-                                    1, kPickerButtonHeight);
-        drawer->RenderRectangleFill(kDialogRule, kPickerX + 2 * third, kPickerButtonY,
-                                    1, kPickerButtonHeight);
-        const std::int32_t label_y = kPickerButtonY + 20;
+        drawer->RenderRectangleFill(kDialogRule, kPickerX + third,
+                                    kPickerButtonY + rise, 1, kPickerButtonHeight);
+        drawer->RenderRectangleFill(kDialogRule, kPickerX + 2 * third,
+                                    kPickerButtonY + rise, 1, kPickerButtonHeight);
+        const std::int32_t label_y = kPickerButtonY + 20 + rise;
         text_center(drawer, " Cancel", 24, kDialogAction,
                     kPickerX + third / 2, label_y);
         text_center(drawer, " Refresh", 24, kDialogAction,
@@ -510,44 +572,48 @@ private:
     }
 
     void render_sending(pu::ui::render::Renderer::Ref &drawer) {
-        dialog_face(drawer, 170, kDialogX, kDialogY, kDialogWidth, kDialogHeight,
-                    kDialogButtonY);
+        const std::int32_t rise = dialog_rise();
+        dialog_face(drawer, 170, kDialogX, kDialogY + rise, kDialogWidth,
+                    kDialogHeight, kDialogButtonY + rise);
         const bool cancelling = transfer_cancel_requested_.load();
         text_center(drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
-                    25, kInk, kWidth / 2, 258);
+                    25, kInk, kWidth / 2, 258 + rise);
         const std::uint64_t current = transfer_current_.load();
         const std::uint64_t total = transfer_total_.load();
         const std::uint64_t percent = total > 0
             ? std::min<std::uint64_t>(100, current * 100 / total) : 0;
         constexpr std::int32_t bar_x = 360;
         constexpr std::int32_t bar_width = 560;
-        drawer->RenderRoundedRectangleFill({205, 205, 208, 255}, bar_x, 330,
+        drawer->RenderRoundedRectangleFill({205, 205, 208, 255}, bar_x, 330 + rise,
                                            bar_width, 12, 6);
         if (percent > 0) {
             const std::int32_t fill_width = std::max<std::int32_t>(
                 12, static_cast<std::int32_t>(percent * bar_width / 100));
-            drawer->RenderRoundedRectangleFill(kAccent, bar_x, 330, fill_width, 12, 6);
+            drawer->RenderRoundedRectangleFill(kAccent, bar_x, 330 + rise,
+                                               fill_width, 12, 6);
         }
         text_center(drawer, total > 0 ? std::to_string(percent) + "%" : "Preparing upload...",
-                    18, kMuted, kWidth / 2, 358);
+                    18, kMuted, kWidth / 2, 358 + rise);
         if (cancelling) {
             text_center(drawer, "Waiting for Telegram to stop", 24, kMuted,
-                        kWidth / 2, kDialogButtonY + 20);
+                        kWidth / 2, kDialogButtonY + 20 + rise);
         } else {
             text_center(drawer, " Cancel", 24, kDialogAction,
-                        kWidth / 2, kDialogButtonY + 20);
+                        kWidth / 2, kDialogButtonY + 20 + rise);
         }
     }
 
     void render_result(pu::ui::render::Renderer::Ref &drawer) {
-        dialog_face(drawer, 170, kDialogX, kDialogY, kDialogWidth, kDialogHeight,
-                    kDialogButtonY);
+        const std::int32_t rise = dialog_rise();
+        dialog_face(drawer, 170, kDialogX, kDialogY + rise, kDialogWidth,
+                    kDialogHeight, kDialogButtonY + rise);
         const bool success = controller_.share_succeeded();
         text_center(drawer, success ? "Shared" : "Could not share", 29,
-                    success ? kSuccess : kFailure, kWidth / 2, 252);
+                    success ? kSuccess : kFailure, kWidth / 2, 252 + rise);
         text_center(drawer, clipped(controller_.result_message(), 58), 20, kInk,
-                    kWidth / 2, 322);
-        text_center(drawer, "OK", 24, kDialogAction, kWidth / 2, kDialogButtonY + 20);
+                    kWidth / 2, 322 + rise);
+        text_center(drawer, "OK", 24, kDialogAction, kWidth / 2,
+                    kDialogButtonY + 20 + rise);
     }
 
     GalleryController &controller_;
@@ -561,6 +627,11 @@ private:
     std::vector<HintZone> hint_zones_;
     std::size_t text_slot_{};
     std::uint32_t pulse_frame_{};
+    Screen shown_screen_{Screen::Grid};
+    Screen transition_from_{Screen::Grid};
+    std::size_t shown_media_index_{};
+    std::uint32_t transition_frame_{kTransitionFrames};
+    double transition_t_{1.0};
 };
 
 GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
