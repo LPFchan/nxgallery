@@ -109,6 +109,18 @@ TelegramConfigResult parse_telegram_config(std::string_view input) noexcept {
     }
 }
 
+std::string serialize_telegram_config(const TelegramConfig &config) {
+    std::string output = "bot_token = " + config.bot_token + "\n";
+    output += "discover_chats = ";
+    output += config.discover_chats ? "true" : "false";
+    output += "\n";
+    for (const auto &chat : config.chats) {
+        if (chat.type != "configured") continue;
+        output += "chat = " + std::to_string(chat.id) + " | " + chat.title + "\n";
+    }
+    return output;
+}
+
 TelegramConfigResult load_telegram_config(const char *path) noexcept {
     try {
         if (path == nullptr || *path == '\0') return failure("configuration path is empty");

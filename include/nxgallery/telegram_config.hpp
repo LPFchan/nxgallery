@@ -24,5 +24,8 @@ struct TelegramConfigResult {
 
 TelegramConfigResult parse_telegram_config(std::string_view input) noexcept;
 TelegramConfigResult load_telegram_config(const char *path) noexcept;
+// Renders a config back into the on-disk format. Only file-born ("configured")
+// chats are written; discovered chats live in the separate chat cache.
+std::string serialize_telegram_config(const TelegramConfig &config);
 
 }  // namespace nxgallery

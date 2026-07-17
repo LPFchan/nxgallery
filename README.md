@@ -16,7 +16,7 @@ NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled
 
 | Surface | Controls |
 | --- | --- |
-| Grid | D-pad selects, A opens, + returns to hbmenu |
+| Grid | D-pad selects, A opens, Y opens Telegram token setup, + returns to hbmenu |
 | Viewer | Left/right changes capture, A plays/pauses video, X opens Telegram share, B returns; videos show elapsed and total playback progress |
 | Chat picker | Up/down selects, A sends, Y refreshes chats, B cancels |
 | Sending | B aborts the active Telegram transfer |
@@ -26,7 +26,17 @@ Share, chat-row, Send, and Cancel targets.
 
 ## Telegram configuration
 
-Copy `telegram-bot.conf.example` to `/switch/nxgallery/telegram-bot.conf` on the SD card and replace its placeholder token. Optionally add `chat=ID|Title` for destinations that must always appear. With `discover_chats=true`, chats observed in pending bot updates are cached at `/switch/nxgallery/telegram-state.json`. NX Gallery performs one background refresh at launch; opening the picker never waits for Telegram. Y starts another background refresh.
+The easiest path is in-app: press Y on the grid. The console starts a one-shot
+HTTP listener on the local network and shows a QR code (plus the same URL as
+text). Scanning it on a phone that shares the Switch's Wi-Fi opens a paste-the-
+token form served by the console itself; submitting writes
+`/switch/nxgallery/telegram-bot.conf` and starts chat discovery immediately.
+The URL contains a random one-shot path, the listener accepts one valid token
+and closes, and the token never leaves the local network. Networks with client
+isolation (hotels, campus Wi-Fi) block phone-to-console traffic; use the manual
+path below there.
+
+Manually: copy `telegram-bot.conf.example` to `/switch/nxgallery/telegram-bot.conf` on the SD card and replace its placeholder token. Optionally add `chat=ID|Title` for destinations that must always appear. With `discover_chats=true`, chats observed in pending bot updates are cached at `/switch/nxgallery/telegram-state.json`. NX Gallery performs one background refresh at launch; opening the picker never waits for Telegram. Y starts another background refresh.
 
 Bots cannot enumerate every chat they belong to. A chat must be configured or observed in an update. Telegram retains pending updates for no longer than 24 hours. NX Gallery and NX Torrent may sequentially consume the same bot update queue; this is an accepted prototype tradeoff.
 

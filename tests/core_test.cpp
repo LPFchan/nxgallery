@@ -1,6 +1,7 @@
 #include <nxgallery/album_index.hpp>
 #include <nxgallery/gallery_controller.hpp>
 #include <nxgallery/telegram_config.hpp>
+#include <nxgallery/token_setup.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -155,12 +156,73 @@ void album_limit_keeps_newest() {
     rmdir(root);
 }
 
+void serialize_contract() {
+    nxgallery::TelegramConfig config;
+    config.bot_token = "123456:abc_DEF-123";
+    config.discover_chats = true;
+    config.chats = {{-1001234567890, "Family room", "configured"},
+                    {42, "Me", "private"}};
+    const std::string serialized = nxgallery::serialize_telegram_config(config);
+    const auto parsed = nxgallery::parse_telegram_config(serialized);
+    assert(parsed);
+    assert(parsed.config->bot_token == config.bot_token);
+    assert(parsed.config->discover_chats);
+    // Discovered chats belong to the chat cache, not the config file.
+    assert(parsed.config->chats.size() == 1);
+    assert(parsed.config->chats.front().id == -1001234567890);
+    assert(parsed.config->chats.front().title == "Family room");
+}
+
+void http_request_contract() {
+    nxgallery::HttpRequest request;
+    bool malformed = true;
+    assert(!nxgallery::parse_http_request("GET /s/ab HTTP/1.1\r\n", request, malformed));
+    assert(!malformed);
+
+    assert(nxgallery::parse_http_request(
+        "GET /s/abcd1234 HTTP/1.1\r\nHost: 10.0.0.5:8135\r\n\r\n", request, malformed));
+    assert(request.method == "GET");
+    assert(request.target == "/s/abcd1234");
+    assert(request.body.empty());
+
+    const std::string post =
+        "POST /s/abcd1234 HTTP/1.1\r\n"
+        "Content-Type: application/x-www-form-urlencoded\r\n"
+        "content-length: 23\r\n\r\n"
+        "token=123456%3Aabc-DEF_";
+    assert(!nxgallery::parse_http_request(post.substr(0, post.size() - 4),
+                                          request, malformed));
+    assert(!malformed);
+    assert(nxgallery::parse_http_request(post, request, malformed));
+    assert(request.method == "POST");
+    assert(request.body == "token=123456%3Aabc-DEF_");
+
+    assert(!nxgallery::parse_http_request("NOT-HTTP\r\n\r\n", request, malformed));
+    assert(malformed);
+    assert(!nxgallery::parse_http_request(
+        "POST / HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n", request, malformed));
+    assert(malformed);
+}
+
+void form_decode_contract() {
+    assert(nxgallery::url_decode_form_value("a+b%3Ac%2fd") == "a b:c/d");
+    assert(nxgallery::url_decode_form_value("%zz") == "%zz");
+    assert(nxgallery::form_field("token=123456%3AabcDEF&other=1", "token") ==
+           "123456:abcDEF");
+    assert(nxgallery::form_field("other=1&token=+x+", "token") == " x ");
+    assert(nxgallery::form_field("other=1", "token").empty());
+    assert(nxgallery::form_field("token", "token").empty());
+}
+
 }  // namespace
 
 int main() {
     controller_flow();
     grid_boundaries();
     config_contract();
+    serialize_contract();
+    http_request_contract();
+    form_decode_contract();
     album_scan_contract();
     album_limit_keeps_newest();
     return 0;

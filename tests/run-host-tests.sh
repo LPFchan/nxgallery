@@ -10,6 +10,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic \
     "$repo_root/source/album_index.cpp" \
     "$repo_root/source/gallery_controller.cpp" \
     "$repo_root/source/telegram_config.cpp" \
+    "$repo_root/source/token_setup.cpp" \
     -o "$test_binary"
 "$test_binary"
 printf 'nxgallery host tests passed\n'

@@ -3,6 +3,7 @@
 #include <nxgallery/album_index.hpp>
 #include <nxgallery/gallery_controller.hpp>
 #include <nxgallery/telegram_bot.hpp>
+#include <nxgallery/token_setup.hpp>
 #include <nxgallery/video_player.hpp>
 
 #include <pu/Plutonium>
@@ -42,6 +43,10 @@ private:
     void poll_share_worker();
     void start_chat_refresh();
     void poll_chat_refresh();
+    void open_token_setup();
+    void close_token_setup();
+    void poll_token_setup();
+    void apply_setup_token();
     void advance_automation();
 
     GalleryController controller_;
@@ -60,6 +65,12 @@ private:
     std::atomic<std::uint64_t> transfer_current_{};
     std::atomic<std::uint64_t> transfer_total_{};
     std::atomic<bool> transfer_cancel_requested_{};
+    std::unique_ptr<TokenSetupServer> setup_server_;
+    std::string setup_url_;
+    std::string setup_notice_;
+    std::string pending_setup_token_;
+    bool setup_active_{};
+    bool telegram_ready_{};
     std::array<std::uint32_t, 4> dir_hold_frames_{};
     bool touch_down_{};
     std::int32_t touch_start_x_{};

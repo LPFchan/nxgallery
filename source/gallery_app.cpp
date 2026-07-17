@@ -2,6 +2,8 @@
 #include <nxgallery/horizon_album.hpp>
 #include <nxgallery/video_player.hpp>
 
+#include "qrcodegen.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -11,6 +13,12 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace nxgallery {
 namespace {
@@ -101,7 +109,16 @@ double ease_out_cubic(double t) {
     return 1.0 - inverse * inverse * inverse;
 }
 
-enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back };
+// Token setup overlay: reuses the chat-picker dialog footprint, QR panel on
+// the left, instructions on the right.
+constexpr char kTelegramConfigPath[] = "sdmc:/switch/nxgallery/telegram-bot.conf";
+constexpr std::uint16_t kSetupPort = 8135;
+constexpr std::int32_t kSetupQrX = 240;
+constexpr std::int32_t kSetupQrY = 176;
+constexpr std::int32_t kSetupQrPanel = 320;
+constexpr std::int32_t kSetupTextX = 600;
+
+enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back, Setup };
 
 void render_outline(pu::ui::render::Renderer::Ref &drawer, pu::ui::Color color,
                     std::int32_t x, std::int32_t y, std::int32_t width,
@@ -144,10 +161,14 @@ public:
                    VideoPlayer &video_player,
                    std::atomic<std::uint64_t> &transfer_current,
                    std::atomic<std::uint64_t> &transfer_total,
-                   std::atomic<bool> &transfer_cancel_requested)
+                   std::atomic<bool> &transfer_cancel_requested,
+                   bool &setup_active, std::string &setup_url,
+                   std::string &setup_notice, bool &telegram_ready)
         : controller_(controller), status_(status), video_player_(video_player),
           transfer_current_(transfer_current), transfer_total_(transfer_total),
-          transfer_cancel_requested_(transfer_cancel_requested) {
+          transfer_cancel_requested_(transfer_cancel_requested),
+          setup_active_(setup_active), setup_url_(setup_url),
+          setup_notice_(setup_notice), telegram_ready_(telegram_ready) {
         thumbnail_states_.resize(controller_.media().size(), ThumbnailState::Unloaded);
         preload_initial_thumbnail_window();
     }
@@ -191,6 +212,7 @@ public:
             case Screen::Sending: render_viewer(drawer); render_sending(drawer); break;
             case Screen::Result: render_viewer(drawer); render_result(drawer); break;
         }
+        if (setup_active_) render_token_setup(drawer);
         render_screen_fade(drawer);
         for (std::size_t index = text_slot_; index < text_slots_.size(); ++index) {
             pu::ui::render::DeleteTexture(text_slots_[index].texture);
@@ -576,9 +598,73 @@ private:
         }
         text(drawer, "build " __DATE__ " " __TIME__, 16, kMuted, 40, 694);
         if (!status_.empty()) text(drawer, clipped(status_, 64), 18, kMuted, 40, 668);
-        hints(drawer, {{" Quit", HintTag::Hbmenu, 44},
-                       {" View", HintTag::View, 0}},
+        std::vector<HintItem> grid_hints;
+        if (!telegram_ready_) {
+            grid_hints.push_back({" Set up Telegram", HintTag::Setup, 44});
+        }
+        grid_hints.push_back({" Quit", HintTag::Hbmenu, 44});
+        grid_hints.push_back({" View", HintTag::View, 0});
+        hints(drawer, grid_hints,
               kWidth - 60, 663, 22, kInk, kFooterRuleY + 1, kHeight - kFooterRuleY - 1);
+    }
+
+    void render_qr(pu::ui::render::Renderer::Ref &drawer, const std::string &content,
+                   std::int32_t x, std::int32_t y, std::int32_t panel) {
+        drawer->RenderRoundedRectangleFill(kWhite, x, y, panel, panel, 8);
+        if (content.empty()) return;
+        if (qr_key_ != content) {
+            qr_key_ = content;
+            qr_size_ = 0;
+            std::vector<std::uint8_t> qrcode(qrcodegen_BUFFER_LEN_MAX);
+            std::vector<std::uint8_t> scratch(qrcodegen_BUFFER_LEN_MAX);
+            if (qrcodegen_encodeText(content.c_str(), scratch.data(), qrcode.data(),
+                                     qrcodegen_Ecc_MEDIUM, qrcodegen_VERSION_MIN,
+                                     qrcodegen_VERSION_MAX, qrcodegen_Mask_AUTO,
+                                     true)) {
+                qr_size_ = qrcodegen_getSize(qrcode.data());
+                qr_modules_.assign(static_cast<std::size_t>(qr_size_) * qr_size_, 0);
+                for (int row = 0; row < qr_size_; ++row) {
+                    for (int column = 0; column < qr_size_; ++column) {
+                        qr_modules_[static_cast<std::size_t>(row) * qr_size_ + column] =
+                            qrcodegen_getModule(qrcode.data(), column, row) ? 1 : 0;
+                    }
+                }
+            }
+        }
+        if (qr_size_ <= 0) {
+            text_center(drawer, "QR unavailable", 18, kFailure,
+                        x + panel / 2, y + panel / 2 - 10);
+            return;
+        }
+        const std::int32_t scale = std::max<std::int32_t>(1, (panel - 32) / qr_size_);
+        const std::int32_t origin_x = x + (panel - scale * qr_size_) / 2;
+        const std::int32_t origin_y = y + (panel - scale * qr_size_) / 2;
+        for (int row = 0; row < qr_size_; ++row) {
+            for (int column = 0; column < qr_size_; ++column) {
+                if (qr_modules_[static_cast<std::size_t>(row) * qr_size_ + column] == 0) continue;
+                drawer->RenderRectangleFill(kBlack, origin_x + column * scale,
+                                            origin_y + row * scale, scale, scale);
+            }
+        }
+    }
+
+    void render_token_setup(pu::ui::render::Renderer::Ref &drawer) {
+        dialog_face(drawer, 150, kPickerX, kPickerY, kPickerWidth, kPickerHeight,
+                    kPickerButtonY);
+        text_center(drawer, "Set up Telegram sharing", 25, kInk, kWidth / 2, 124);
+        render_qr(drawer, setup_url_, kSetupQrX, kSetupQrY, kSetupQrPanel);
+        text(drawer, "1. Create a bot with @BotFather.", 20, kInk, kSetupTextX, 192);
+        text(drawer, "2. Scan the code with your phone.", 20, kInk, kSetupTextX, 240);
+        text(drawer, "Phone and Switch: same Wi-Fi.", 17, kMuted, kSetupTextX + 24, 272);
+        text(drawer, "3. Paste the bot token and send.", 20, kInk, kSetupTextX, 320);
+        text(drawer, "Or open this address in a browser:", 17, kMuted, kSetupTextX, 384);
+        text(drawer, clipped(setup_url_, 42), 18, kInk, kSetupTextX, 412);
+        if (!setup_notice_.empty()) {
+            text_center(drawer, clipped(setup_notice_, 64), 18, kMuted,
+                        kWidth / 2, 514);
+        }
+        text_center(drawer, " Cancel", 24, kDialogAction, kWidth / 2,
+                    kPickerButtonY + 20);
     }
 
     void render_viewer(pu::ui::render::Renderer::Ref &drawer) {
@@ -792,11 +878,18 @@ private:
     std::atomic<std::uint64_t> &transfer_current_;
     std::atomic<std::uint64_t> &transfer_total_;
     std::atomic<bool> &transfer_cancel_requested_;
+    bool &setup_active_;
+    std::string &setup_url_;
+    std::string &setup_notice_;
+    bool &telegram_ready_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
     std::vector<ThumbnailSlot> thumbnail_slots_;
     std::vector<ThumbnailState> thumbnail_states_;
     std::vector<HintZone> hint_zones_;
+    std::string qr_key_;
+    std::vector<std::uint8_t> qr_modules_;
+    int qr_size_{};
     std::size_t text_slot_{};
     std::uint8_t render_alpha_{255};
     std::uint32_t pulse_frame_{};
@@ -818,11 +911,13 @@ GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
     : Application(std::move(renderer)), bot_(std::move(bot)),
       status_(std::move(telegram_status)) {
     controller_.set_media(std::move(album.items));
+    telegram_ready_ = bot_ != nullptr;
     if (!album.error.empty()) status_ = album.error;
     else if (album.truncated) status_ = "Album limited to the newest 5000 captures";
 }
 
 GalleryApplication::~GalleryApplication() {
+    if (setup_server_) setup_server_->stop();
     if (share_worker_.joinable()) share_worker_.join();
     if (chat_refresh_worker_.joinable()) chat_refresh_worker_.join();
 }
@@ -833,7 +928,9 @@ void GalleryApplication::OnLoad() {
     layout_->SetBackgroundColor(kBackground);
     element_ = std::make_shared<GalleryElement>(controller_, status_, *video_player_,
                                                 transfer_current_, transfer_total_,
-                                                transfer_cancel_requested_);
+                                                transfer_cancel_requested_,
+                                                setup_active_, setup_url_,
+                                                setup_notice_, telegram_ready_);
     layout_->Add(element_);
     LoadLayout(layout_);
     SetOnInput([this](const u64 down, const u64, const u64 held, const pu::ui::TouchPoint touch) {
@@ -848,6 +945,7 @@ void GalleryApplication::OnLoad() {
         }
         poll_share_worker();
         poll_chat_refresh();
+        poll_token_setup();
         advance_automation();
     });
     if (bot_) {
@@ -994,6 +1092,7 @@ void GalleryApplication::toggle_video_playback() {
 }
 
 void GalleryApplication::on_swipe(std::int32_t dx, std::int32_t dy) {
+    if (setup_active_) return;
     const bool vertical = std::abs(dy) >= std::abs(dx);
     if (controller_.screen() == Screen::Grid && vertical) {
         const auto &media = controller_.media();
@@ -1036,6 +1135,7 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
             controller_.handle(*tag == HintTag::Prev ? Action::Left : Action::Right);
             break;
         case HintTag::Share: open_chat_picker(); break;
+        case HintTag::Setup: open_token_setup(); break;
         case HintTag::Back:
             if (video_player_) video_player_->stop();
             controller_.handle(Action::Back);
@@ -1045,6 +1145,14 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
 }
 
 void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
+    if (setup_active_) {
+        if (touch.HitsRegion(kPickerX, kPickerButtonY, kPickerWidth,
+                             kPickerButtonHeight)) {
+            close_token_setup();
+            status_ = "Telegram setup cancelled";
+        }
+        return;
+    }
     if ((controller_.screen() == Screen::Grid ||
          controller_.screen() == Screen::Viewer) && dispatch_hint(touch)) {
         return;
@@ -1114,6 +1222,98 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
         return;
     }
     if (controller_.screen() == Screen::Result) controller_.handle(Action::Confirm);
+}
+
+void GalleryApplication::open_token_setup() {
+    if (setup_active_) return;
+    if (video_player_) video_player_->stop();
+    const std::uint32_t host = static_cast<std::uint32_t>(gethostid());
+    if (host == 0 || host == INADDR_NONE || host == htonl(INADDR_LOOPBACK)) {
+        status_ = "Connect the Switch to a Wi-Fi network first";
+        return;
+    }
+    in_addr address{};
+    address.s_addr = host;
+    char ip_text[INET_ADDRSTRLEN] = {};
+    if (inet_ntop(AF_INET, &address, ip_text, sizeof(ip_text)) == nullptr) {
+        status_ = "Could not read the console's network address";
+        return;
+    }
+    std::uint32_t raw = 0;
+    randomGet(&raw, sizeof(raw));
+    char secret[9] = {};
+    std::snprintf(secret, sizeof(secret), "%08x", raw);
+    auto server = std::make_unique<TokenSetupServer>();
+    std::string error;
+    if (!server->start(ip_text, kSetupPort, secret, error)) {
+        status_ = error;
+        return;
+    }
+    setup_server_ = std::move(server);
+    setup_url_ = setup_server_->url();
+    setup_notice_ = "Waiting for your phone...";
+    setup_active_ = true;
+    std::printf("NXGALLERY_DIAGNOSTIC event=token_setup state=open port=%u\n",
+                static_cast<unsigned int>(kSetupPort));
+}
+
+void GalleryApplication::close_token_setup() {
+    setup_active_ = false;
+    if (setup_server_) {
+        setup_server_->stop();
+        setup_server_.reset();
+    }
+    setup_url_.clear();
+    setup_notice_.clear();
+}
+
+void GalleryApplication::poll_token_setup() {
+    if (setup_server_) {
+        const TokenSetupServer::State state = setup_server_->state();
+        if (state == TokenSetupServer::State::Received &&
+            pending_setup_token_.empty()) {
+            pending_setup_token_ = setup_server_->take_token();
+            setup_notice_ = "Token received. Connecting to Telegram...";
+        } else if (state == TokenSetupServer::State::Failed) {
+            status_ = setup_server_->failure_reason();
+            close_token_setup();
+        }
+    }
+    // Swapping the bot must wait until no worker thread can still touch it.
+    if (!pending_setup_token_.empty() && !share_worker_.joinable() &&
+        !chat_refresh_worker_.joinable()) {
+        apply_setup_token();
+    }
+}
+
+void GalleryApplication::apply_setup_token() {
+    TelegramConfig config;
+    config.bot_token = pending_setup_token_;
+    auto existing = load_telegram_config(kTelegramConfigPath);
+    if (existing) {
+        config.chats = std::move(existing.config->chats);
+        config.discover_chats = existing.config->discover_chats;
+    }
+    const std::string serialized = serialize_telegram_config(config);
+    (void)mkdir("sdmc:/switch", 0777);
+    (void)mkdir("sdmc:/switch/nxgallery", 0777);
+    std::FILE *out = std::fopen(kTelegramConfigPath, "wb");
+    const bool persisted = out != nullptr &&
+        std::fwrite(serialized.data(), 1, serialized.size(), out) == serialized.size();
+    if (out != nullptr) std::fclose(out);
+    std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config_persist path=%s result=%s\n",
+                kTelegramConfigPath, persisted ? "pass" : "fail");
+    bot_ = std::make_unique<TelegramBot>(std::move(config));
+    telegram_ready_ = true;
+    std::vector<TelegramChat> cached;
+    bot_->cached_chats(cached);
+    controller_.set_chats(std::move(cached));
+    status_ = persisted ? "Telegram connected. Looking for chats..."
+                        : "Token active, but saving to the SD card failed";
+    std::fill(pending_setup_token_.begin(), pending_setup_token_.end(), '\0');
+    pending_setup_token_.clear();
+    close_token_setup();
+    start_chat_refresh();
 }
 
 void GalleryApplication::refresh_chats_from_ui() {
@@ -1192,6 +1392,18 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         }
     }
 
+    if (setup_active_) {
+        if ((down & HidNpadButton_Plus) != 0) {
+            close_token_setup();
+            exit_to_hbmenu();
+            return;
+        }
+        if ((down & HidNpadButton_B) != 0) {
+            close_token_setup();
+            status_ = "Telegram setup cancelled";
+        }
+        return;
+    }
     if ((down & HidNpadButton_Plus) != 0 && controller_.screen() != Screen::Sending) {
         exit_to_hbmenu();
         return;
@@ -1216,6 +1428,10 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         }
     }
     if ((down & HidNpadButton_X) != 0 && controller_.screen() == Screen::Viewer) { open_chat_picker(); return; }
+    if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::Grid) {
+        open_token_setup();
+        return;
+    }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::ChatPicker) {
         refresh_chats_from_ui();
         return;
