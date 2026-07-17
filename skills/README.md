@@ -24,10 +24,15 @@ Conditional skills:
 - `upstream-intake/`
   - Companion workflow for the optional upstream-review module.
   - Include it when the adopted repo enables `records/upstream-intake/`; omit it when the repo does not track an upstream.
-
-## Global skills (not vendored here)
-
-Repo-agnostic workflows — `sharpen-the-tip`, `prototype-mode`, `housekeeping`, `proactive-docs` — are **not** copied into each repo. They live globally in `~/.agents/skills/` (installed by the `agents` module of LPFchan/setup) and the runtime surfaces them everywhere. This scaffold only carries skills that are bound to repo-template's own records/commit machinery.
+- `sharpen-the-tip/`
+  - Iterative artifact refinement via neutral-subagent review loop.
+  - Include it when the repo uses structured review cycles for plans, specs, or other artifacts.
+- `prototype-mode/`
+  - Pre-MVP posture: break interfaces freely, skip bridge layers and migration scaffolding, refactor surgically.
+  - Include it when the repo contains greenfield or pre-production code.
+- `housekeeping/`
+  - Read-only adversarial repository-boundary audit: inventory the full physical workspace, verdict every artifact, propose a gated migration.
+  - Include it when the repo accumulates generated artifacts, caches, backups, or ignored residue that need periodic justification.
 
 Keep skills procedural.
 Do not duplicate the canonical rules from `records/REPO.md` inside them.
@@ -44,4 +49,3 @@ Do not use `SKILL.md` for:
 - repo-wide policy
 - general project truth
 - local or personal preferences that belong in tool-specific memory files
-

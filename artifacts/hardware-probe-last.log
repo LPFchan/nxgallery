@@ -1,0 +1,66 @@
+Sending nxgallery.nro, 17055888 bytes
+7353241 sent (43.11%), 633 blocks
+starting server
+server active ...
+NXGALLERY_DIAGNOSTIC event=startup probe=false
+NXGALLERY_DIAGNOSTIC event=telegram_config_persist path=sdmc:/switch/nxgallery/telegram-bot.conf result=pass
+NXGALLERY_DIAGNOSTIC event=telegram_config source=injected configured_chats=0 discover=true
+NXGALLERY_DIAGNOSTIC event=chat_cache configured=0 cached=3 state_loaded=true
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=260,202 delta=14,-4 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1092,684 delta=-4,2 screen=1
+NXGALLERY_DIAGNOSTIC event=touch_hint tag=5
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=394,590 delta=0,-2 screen=2
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1178,62 delta=4,-2 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1166,34 delta=-6,14 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1200,52 delta=-2,0 screen=2
+NXGALLERY_DIAGNOSTIC event=chat_refresh updates=0 metadata=2 destinations=3
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=398,590 delta=-4,2 screen=2
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=120,50 delta=0,4 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=514,202 delta=-2,-6 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=swipe start=1158,408 delta=-712,240 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=swipe start=1040,476 delta=-738,196 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1212,696 delta=-4,0 screen=1
+NXGALLERY_DIAGNOSTIC event=touch_hint tag=6
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1066,508 delta=-2,18 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1198,528 delta=-4,4 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=loading
+NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=1280 height=720 nominal_fps_milli=30000 pacing=timestamp
+NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1206,680 delta=-2,2 screen=1
+NXGALLERY_DIAGNOSTIC event=touch_hint tag=6
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1192,686 delta=-4,-4 screen=0
+NXGALLERY_DIAGNOSTIC event=touch_hint tag=0
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1192,696 delta=-4,0 screen=1
+NXGALLERY_DIAGNOSTIC event=touch_hint tag=6
+NXGALLERY_DIAGNOSTIC event=touch result=swipe start=836,450 delta=196,-422 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=swipe start=946,268 delta=12,432 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=swipe start=908,460 delta=82,-276 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=swipe start=988,504 delta=52,-310 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=708,466 delta=-2,-4 screen=0
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=958,502 delta=0,0 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=loading
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=636,368 delta=14,6 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=paused
+NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=1280 height=720 nominal_fps_milli=30000 pacing=timestamp
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=688,436 delta=0,2 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=playing
+NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1108,432 delta=-6,-4 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=paused
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1116,416 delta=-16,-12 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=playing
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1160,354 delta=-4,0 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=paused
+NXGALLERY_DIAGNOSTIC event=video_playback state=loading
+NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=1280 height=720 nominal_fps_milli=30000 pacing=timestamp
+NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1196,58 delta=-4,-2 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1190,58 delta=0,4 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1224,46 delta=-4,4 screen=1
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=642,106 delta=-2,10 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=loading
+NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=1280 height=720 nominal_fps_milli=30000 pacing=timestamp
+NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame
+NXGALLERY_DIAGNOSTIC event=touch result=tap start=1174,362 delta=-10,0 screen=1
+NXGALLERY_DIAGNOSTIC event=video_playback state=paused
+exiting ... 
