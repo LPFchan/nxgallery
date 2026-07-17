@@ -1,0 +1,8 @@
+# Store the real file at /switch/nxgallery/telegram-bot.conf on the SD card.
+# Never package or commit the real bot token.
+bot_token=123456789:replace_me
+discover_chats=true
+
+# Configured entries appear immediately, even before the bot observes updates.
+# Repeat this line for every known destination.
+chat=-1001234567890|Family room

@@ -1,0 +1,11 @@
+.DS_Store
+Thumbs.db
+.tmp_commit_msg_*
+
+# Local credentials and generated Switch artifacts
+.secrets/
+build/
+*.elf
+*.nacp
+*.nro
+*.zip

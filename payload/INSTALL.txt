@@ -1,0 +1,11 @@
+NX Gallery prototype installation
+
+1. Copy the archive's switch/nxgallery directory to the SD card's /switch directory.
+2. Rename telegram-bot.conf.example to telegram-bot.conf.
+3. Replace the placeholder bot_token value with the token from BotFather.
+4. Add one or more chat=ID|Title lines for destinations that should always appear.
+5. Start or add the bot in each desired Telegram chat, then use Y in the picker to discover pending chats.
+6. Launch NX Gallery from the Homebrew Menu with full memory access.
+
+The app reads captures from /Nintendo/Album and never modifies them.
+The real telegram-bot.conf is a credential. Do not publish or attach it to bug reports.
