@@ -4,9 +4,9 @@
 
 - Last updated: 2026-07-17
 - Overall posture: `active`
-- Current focus: physical Switch delivery smoke test and UX refinement
-- Highest-priority blocker: no physical Switch validation yet; chat-cache persistence now needs confirmation on Horizon
-- Next operator decision needed: validate photo and video delivery on hardware, then decide whether to add video playback
+- Current focus: physical Switch UX refinement after backend delivery validation
+- Highest-priority blocker: none for SD enumeration, networking, or Telegram photo/video delivery
+- Next operator decision needed: decide whether video playback belongs in the next slice
 - Related decisions: DEC-20260717-001
 
 ## Current state
@@ -26,14 +26,32 @@ the newest 5,000 are retained. Ryujinx confirms that refresh rewrites the cache
 and that both the discovered private chat and its Korean title survive a cold
 app relaunch.
 
+Hardware validation is now self-driving: nxlink `--probe` diagnostics cover SD
+enumeration, destination refresh, photo delivery, and MP4 delivery, ending in a
+machine-readable summary without requiring the operator to inspect or relay UI
+state. The probe also queries Horizon's NAND and SD Album Accessor stores and
+persists native exception context for post-crash diagnosis.
+
+The first hardware inventory proved that Horizon exposes 107 SD captures and
+one NAND capture through `caps:a`, while raw `sdmc:/Nintendo/Album` traversal
+returns no media in the homebrew launch context. The Switch runtime now uses
+Album Accessor enumeration and lazily materializes selected photos or MP4
+streams for rendering and Bot API upload.
+
+The physical Switch probe now passes end to end. It enumerated 68 photos and 40
+videos from 107 SD plus one NAND Album Accessor entry, authenticated its ephemeral
+credential channel, resolved two saved destinations, and delivered one real
+photo plus one real MP4 through Telegram. The harness treats any missing phase
+as a nonzero failure and the operator independently observed both deliveries.
+
 ## Active tracks
 
 ### Device validation
 
-- Status: `Ryujinx photo delivery passed; hardware and video pending`
+- Status: `physical Switch photo and video delivery passed`
 - Goal: verify album visibility, thumbnail decoding, controller flow, chat refresh, and real photo/video delivery on Horizon.
-- Exit criteria: one photo and one 30-second capture arrive from physical Switch hardware in an explicitly selected chat.
-- Risk: Bot API upload limits, Horizon networking, or physical SD paths may differ from Ryujinx.
+- Exit criteria: met; one photo and one capture arrived from physical Switch hardware in a saved destination.
+- Risk: interactive hardware UI behavior and chat-cache persistence remain less automated than backend delivery.
 
 ### Product completeness
 

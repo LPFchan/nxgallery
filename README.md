@@ -1,10 +1,10 @@
 # NX Gallery
 
-NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled after the stock Album flow. It scans `sdmc:/Nintendo/Album`, presents a four-column capture grid and viewer, and shares the selected photo or video through a Telegram bot after an explicit destination picker.
+NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled after the stock Album flow. On Horizon it enumerates both NAND and SD captures through the `caps:a` Album Accessor service; host tests and Ryujinx fixtures use the filesystem scanner. It presents a four-column capture grid and viewer, and shares the selected photo or video through a Telegram bot after an explicit destination picker.
 
 ## Current prototype
 
-- Read-only recursive album scan for JPEG, PNG, and MP4 captures.
+- Read-only Horizon Album Accessor enumeration with lazy photo/movie materialization; recursive JPEG, PNG, and MP4 scanning remains the host-test backend.
 - Stock-inspired grid, viewer, modal chat picker, sending state, and result dialog.
 - Controller and touchscreen targets for captures, Back, Share, chat rows, Send, and Cancel.
 - Telegram Bot API chat discovery through `getUpdates`, plus configured and persisted destinations.
@@ -61,7 +61,32 @@ For Ryujinx UI verification, `make automation` produces a separate
 sending media. This profile is for emulator QA only; release packages use
 `nxgallery.nro`.
 
-The current build host is `yeowoolmac`; the interactive build session is `nxgallery-dev`.
+The current build host is `yeowoolmac`; hardware probe work runs in
+`main:nxgallery-probe`.
+
+## Automated hardware probe
+
+With NetLoader active on the Switch and a credential file at
+`.secrets/telegram-bot.conf` (or `PROBE_CONFIG=/path/to/file`), run:
+
+```sh
+scripts/run-hardware-probe.sh SWITCH_IP
+```
+
+The production NRO's `--probe` mode attaches stdout and stderr through nxlink,
+queries Horizon's NAND and SD Album Accessor stores, refreshes destinations, tries destinations in
+channel/private/group/configured order until one accepts a photo, sends the
+newest MP4 to that same destination, and prints a final
+`NXGALLERY_PROBE_RESULT` line. It does not print the bot token, chat IDs,
+titles, or media filenames. Native exceptions and uncaught C++ termination are
+mirrored to nxlink and persisted to `/switch/nxgallery/crash.log` (falling back
+to `/nxgallery-crash.log` when the app directory is unavailable).
+
+The harness fails unless all required phases report success. For bare nxlink
+launches, it transfers the credential once over ephemeral TLS; the NRO verifies
+the server's public-key fingerprint itself before requesting the credential.
+The token is kept in memory and never appears in nxlink arguments, output, or
+the NRO.
 
 ## Install
 

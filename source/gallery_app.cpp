@@ -1,4 +1,5 @@
 #include <nxgallery/gallery_app.hpp>
+#include <nxgallery/horizon_album.hpp>
 
 #include <algorithm>
 #include <array>
@@ -118,14 +119,21 @@ private:
     }
 
     pu::sdl2::Texture image(const std::string &path) {
+        MediaItem media{path, path, MediaKind::Photo, 0, 0};
+        std::string resolved_path;
+        std::string error;
+        if (!materialize_media_path(media, resolved_path, error)) {
+            status_ = std::move(error);
+            return nullptr;
+        }
         auto found = std::find_if(image_slots_.begin(), image_slots_.end(),
-                                  [&path](const ImageSlot &slot) { return slot.path == path; });
+                                  [&resolved_path](const ImageSlot &slot) { return slot.path == resolved_path; });
         if (found != image_slots_.end()) return found->texture;
         if (image_slots_.size() >= 16) {
             pu::ui::render::DeleteTexture(image_slots_.front().texture);
             image_slots_.erase(image_slots_.begin());
         }
-        image_slots_.push_back({path, pu::ui::render::LoadImageFromFile(path)});
+        image_slots_.push_back({resolved_path, pu::ui::render::LoadImageFromFile(resolved_path)});
         return image_slots_.back().texture;
     }
 

@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 #ifndef NXGALLERY_HOST_TEST
+#include <cert_pem.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #endif
@@ -52,6 +53,23 @@ HttpsTrustStatus preflight_https_ca_file(const char *path, HttpsCaLoader loader)
 }
 
 #ifndef NXGALLERY_HOST_TEST
+bool ensure_https_ca_file() noexcept {
+    struct stat status {};
+    if (stat(kHttpsCaFile, &status) == 0 && S_ISREG(status.st_mode) && status.st_size > 0) {
+        return true;
+    }
+    if (mkdir("sdmc:/switch/nxgallery", 0777) != 0 && errno != EEXIST) return false;
+    if (mkdir("sdmc:/switch/nxgallery/openssl", 0777) != 0 && errno != EEXIST) return false;
+    std::FILE *output = std::fopen(kHttpsCaFile, "wb");
+    if (output == nullptr) return false;
+    const std::size_t written = std::fwrite(cert_pem, 1, cert_pem_size, output);
+    const bool complete = written == cert_pem_size && std::fflush(output) == 0 &&
+                          std::ferror(output) == 0;
+    std::fclose(output);
+    if (!complete) std::remove(kHttpsCaFile);
+    return complete;
+}
+
 HttpsTrustStatus preflight_https_ca_file() noexcept { return preflight_https_ca_file(kHttpsCaFile, load_with_openssl); }
 #endif
 

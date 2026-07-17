@@ -1,5 +1,6 @@
 #include <nxgallery/telegram_bot.hpp>
 #include <nxgallery/https_trust.hpp>
+#include <nxgallery/horizon_album.hpp>
 
 #include <curl/curl.h>
 #include <json-c/json.h>
@@ -120,7 +121,8 @@ bool perform_form(const TelegramConfig &config, const char *method, const std::s
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     curl_easy_cleanup(curl);
     if (code != CURLE_OK || body.overflow) {
-        error = body.overflow ? "Telegram response exceeded its size limit" : "Telegram HTTPS request failed";
+        error = body.overflow ? "Telegram response exceeded its size limit" :
+            "Telegram HTTPS request failed: " + std::string(curl_easy_strerror(code));
         return false;
     }
     if (response_code < 200 || response_code >= 300) {
@@ -282,8 +284,13 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
 
 BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &chat) noexcept {
     try {
+        std::string media_path;
+        std::string materialize_error;
+        if (!materialize_media_path(media, media_path, materialize_error)) {
+            return {false, materialize_error};
+        }
         struct stat status {};
-        if (chat.id == 0 || stat(media.path.c_str(), &status) != 0 || !S_ISREG(status.st_mode)) return {false, "Selected capture is unavailable"};
+        if (chat.id == 0 || stat(media_path.c_str(), &status) != 0 || !S_ISREG(status.st_mode)) return {false, "Selected capture is unavailable"};
         const std::uint64_t size = status.st_size < 0 ? 0U : static_cast<std::uint64_t>(status.st_size);
         const std::uint64_t limit = media.kind == MediaKind::Photo ? kMaximumPhotoBytes : kMaximumVideoBytes;
         if (size == 0 || size > limit) return {false, media.kind == MediaKind::Photo ? "Photo exceeds the Bot API 10 MB limit" : "Video exceeds the Bot API 50 MB limit"};
@@ -300,14 +307,17 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         curl_mime_data(part, chat_id.c_str(), CURL_ZERO_TERMINATED);
         part = curl_mime_addpart(mime);
         curl_mime_name(part, media.kind == MediaKind::Photo ? "photo" : "video");
-        curl_mime_filedata(part, media.path.c_str());
+        curl_mime_filedata(part, media_path.c_str());
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
         const CURLcode code = curl_easy_perform(curl);
         long response_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         curl_mime_free(mime);
         curl_easy_cleanup(curl);
-        if (code != CURLE_OK || body.overflow) return {false, body.overflow ? "Telegram response exceeded its size limit" : "Telegram upload failed"};
+        if (code != CURLE_OK || body.overflow) {
+            return {false, body.overflow ? "Telegram response exceeded its size limit" :
+                "Telegram upload failed: " + std::string(curl_easy_strerror(code))};
+        }
         JsonOwner root(nullptr, json_object_put);
         json_object *result = nullptr;
         if (!api_result(body.bytes, root, result, error)) {

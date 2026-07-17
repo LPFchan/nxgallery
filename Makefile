@@ -16,6 +16,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 TARGET      := nxgallery
 BUILD       := build
 SOURCES     := source
+DATA        := payload/switch/nxgallery/openssl
 INCLUDES    := include $(PLUTONIUM_PREFIX)/include
 SWITCH_CURL_PREFIX ?= $(PORTLIBS)
 SWITCH_OPENSSL_PREFIX ?= $(PORTLIBS)
@@ -43,14 +44,19 @@ LIBDIRS  += $(SWITCH_CURL_PREFIX) $(SWITCH_OPENSSL_PREFIX)
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT   := $(CURDIR)/$(TARGET)
 export TOPDIR   := $(CURDIR)
-export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
+export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+	$(foreach dir,$(DATA),$(CURDIR)/$(dir))
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 export INCLUDE  := $(foreach dir,$(INCLUDES),-I$(if $(filter /%,$(dir)),$(dir),$(CURDIR)/$(dir))) $(foreach dir,$(LIBDIRS),-I$(dir)/include) -I$(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 export ARCH CFLAGS CXXFLAGS LDFLAGS LIBS
 export CFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 export CPPFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-export OFILES   := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o)
+export BINFILES := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
+export OFILES_BIN := $(addsuffix .o,$(BINFILES))
+export OFILES_SRC := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o)
+export OFILES   := $(OFILES_BIN) $(OFILES_SRC)
+export HFILES_BIN := $(addsuffix .h,$(subst .,_,$(BINFILES)))
 export HFILES   := $(foreach dir,$(INCLUDES),$(wildcard $(dir)/*.h) $(wildcard $(dir)/*.hpp))
 export LD       := $(CXX)
 export NROFLAGS += --icon=$(APP_ICON) --nacp=$(CURDIR)/$(TARGET).nacp
@@ -70,6 +76,9 @@ else
 DEPENDS := $(OFILES:.o=.d)
 .PHONY: all
 all: $(OUTPUT).nro
+$(OFILES_SRC): $(HFILES_BIN)
+%.pem.o %_pem.h: %.pem
+	@$(bin2o)
 $(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp
 $(OUTPUT).elf: $(OFILES)
 include $(DEVKITPRO)/libnx/switch_rules
