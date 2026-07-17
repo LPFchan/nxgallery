@@ -34,6 +34,11 @@ bool classify(const std::string &path, MediaKind &kind) {
     return false;
 }
 
+bool newer(const MediaItem &left, const MediaItem &right) {
+    if (left.modified_time != right.modified_time) return left.modified_time > right.modified_time;
+    return left.path > right.path;
+}
+
 std::string basename(const std::string &path) {
     const std::size_t slash = path.find_last_of('/');
     return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -58,19 +63,25 @@ bool scan_directory(const std::string &path, std::size_t maximum,
                 closedir(directory);
                 return false;
             }
-            if (truncated) break;
             continue;
         }
         if (!S_ISREG(status.st_mode)) continue;
         MediaKind kind;
         if (!classify(child, kind)) continue;
-        if (items.size() >= maximum) {
+        MediaItem candidate{child, basename(child), kind,
+                            static_cast<std::int64_t>(status.st_mtime),
+                            status.st_size < 0 ? 0U : static_cast<std::uint64_t>(status.st_size)};
+        if (items.size() < maximum) {
+            items.push_back(std::move(candidate));
+            std::push_heap(items.begin(), items.end(), newer);
+        } else {
             truncated = true;
-            break;
+            if (newer(candidate, items.front())) {
+                std::pop_heap(items.begin(), items.end(), newer);
+                items.back() = std::move(candidate);
+                std::push_heap(items.begin(), items.end(), newer);
+            }
         }
-        items.push_back({child, basename(child), kind,
-                         static_cast<std::int64_t>(status.st_mtime),
-                         status.st_size < 0 ? 0U : static_cast<std::uint64_t>(status.st_size)});
     }
     closedir(directory);
     return true;
@@ -86,10 +97,7 @@ AlbumScanResult scan_album(const std::string &root, std::size_t maximum_items) n
     }
     try {
         if (!scan_directory(root, maximum_items, result.items, result.truncated, result.error)) return result;
-        std::sort(result.items.begin(), result.items.end(), [](const MediaItem &left, const MediaItem &right) {
-            if (left.modified_time != right.modified_time) return left.modified_time > right.modified_time;
-            return left.path > right.path;
-        });
+        std::sort(result.items.begin(), result.items.end(), newer);
     } catch (...) {
         result.items.clear();
         result.error = "Album scan ran out of memory";

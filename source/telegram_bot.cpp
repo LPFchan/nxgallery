@@ -18,8 +18,7 @@
 namespace nxgallery {
 namespace {
 
-constexpr char kStatePath[] = "/switch/nxgallery/telegram-state.json";
-constexpr char kStateTemporaryPath[] = "/switch/nxgallery/telegram-state.tmp";
+constexpr char kStatePath[] = "sdmc:/switch/nxgallery/telegram-state.json";
 constexpr std::size_t kMaximumResponseBytes = 1024U * 1024U;
 constexpr std::size_t kMaximumStateBytes = 256U * 1024U;
 constexpr std::size_t kMaximumChats = 128;
@@ -210,13 +209,11 @@ bool save_state(std::int64_t offset, const std::vector<TelegramChat> &chats) {
     }
     const char *serialized = json_object_to_json_string_ext(root.get(), JSON_C_TO_STRING_PLAIN);
     if (serialized == nullptr) return false;
-    std::ofstream output(kStateTemporaryPath, std::ios::binary | std::ios::trunc);
+    std::ofstream output(kStatePath, std::ios::binary | std::ios::trunc);
     if (!output) return false;
     output << serialized << '\n';
     output.close();
-    if (!output) { std::remove(kStateTemporaryPath); return false; }
-    if (std::rename(kStateTemporaryPath, kStatePath) != 0) { std::remove(kStateTemporaryPath); return false; }
-    return true;
+    return static_cast<bool>(output);
 }
 
 }  // namespace
@@ -270,8 +267,12 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
             TelegramChat chat;
             if (parse_chat(chat_object, chat)) merge_chat(cached_chats_, std::move(chat));
         }
-        (void)save_state(next_update_offset_, cached_chats_);
         chats = cached_chats_;
+        if (!save_state(next_update_offset_, cached_chats_)) {
+            return {!chats.empty(), chats.empty()
+                ? "Could not save discovered chats"
+                : "Chats refreshed; could not save cache"};
+        }
         return {true, count == 0 ? "No new chats; showing saved destinations" : "Chat destinations refreshed"};
     } catch (...) {
         chats = cached_chats_;

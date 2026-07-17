@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
+#include <utime.h>
 #include <unistd.h>
 
 namespace {
@@ -120,6 +121,40 @@ void album_scan_contract() {
     rmdir(root);
 }
 
+void album_limit_keeps_newest() {
+    char pattern[] = "/tmp/nxgallery-limit-test.XXXXXX";
+    char *root = mkdtemp(pattern);
+    assert(root != nullptr);
+    const std::string oldest = std::string(root) + "/a.jpg";
+    const std::string newest = std::string(root) + "/b.jpg";
+    const std::string middle = std::string(root) + "/c.jpg";
+    { std::ofstream(oldest) << "oldest"; }
+    { std::ofstream(newest) << "newest"; }
+    { std::ofstream(middle) << "middle"; }
+    utimbuf timestamp{};
+    timestamp.actime = 10;
+    timestamp.modtime = 10;
+    assert(utime(oldest.c_str(), &timestamp) == 0);
+    timestamp.actime = 30;
+    timestamp.modtime = 30;
+    assert(utime(newest.c_str(), &timestamp) == 0);
+    timestamp.actime = 20;
+    timestamp.modtime = 20;
+    assert(utime(middle.c_str(), &timestamp) == 0);
+
+    const auto result = nxgallery::scan_album(root, 2);
+    assert(result);
+    assert(result.truncated);
+    assert(result.items.size() == 2);
+    assert(result.items[0].filename == "b.jpg");
+    assert(result.items[1].filename == "c.jpg");
+
+    std::remove(oldest.c_str());
+    std::remove(newest.c_str());
+    std::remove(middle.c_str());
+    rmdir(root);
+}
+
 }  // namespace
 
 int main() {
@@ -127,5 +162,6 @@ int main() {
     grid_boundaries();
     config_contract();
     album_scan_contract();
+    album_limit_keeps_newest();
     return 0;
 }

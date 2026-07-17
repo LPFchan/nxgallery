@@ -19,8 +19,7 @@
 
 ### Near term
 
-- Install the production package on Switch hardware, verify photo share, verify video share, and inspect cached chat behavior across relaunch.
-- Remove the stale prototype destination after the hardware run confirms the discovered private-chat cache behaves correctly.
+- Install the production package on Switch hardware, verify photo share, verify video share, and confirm that a discovered chat persists across relaunch.
 
 ### Deferred
 
