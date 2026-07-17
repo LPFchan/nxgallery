@@ -41,8 +41,8 @@ void GalleryController::move_grid(Action action) {
     if (media_.empty()) return;
     const std::size_t current = media_index_;
     switch (action) {
-        case Action::Left: if (current % kGridColumns != 0) --media_index_; break;
-        case Action::Right: if (current + 1 < media_.size() && current % kGridColumns + 1 < kGridColumns) ++media_index_; break;
+        case Action::Left: if (current > 0) --media_index_; break;
+        case Action::Right: if (current + 1 < media_.size()) ++media_index_; break;
         case Action::Up: if (current >= kGridColumns) media_index_ -= kGridColumns; break;
         case Action::Down: if (current + kGridColumns < media_.size()) media_index_ += kGridColumns; break;
         default: break;

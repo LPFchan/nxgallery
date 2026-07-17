@@ -7,6 +7,7 @@
 
 #include <pu/Plutonium>
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -29,9 +30,14 @@ public:
 private:
     class GalleryElement;
 
-    void on_input(std::uint64_t down, pu::ui::TouchPoint touch);
+    void on_input(std::uint64_t down, std::uint64_t held, pu::ui::TouchPoint touch);
     void on_touch(pu::ui::TouchPoint touch);
+    void on_swipe(std::int32_t dx, std::int32_t dy);
+    bool dispatch_hint(pu::ui::TouchPoint touch);
+    void toggle_video_playback();
     void open_chat_picker();
+    void refresh_chats_from_ui();
+    void exit_to_hbmenu();
     void start_share(ShareRequest request);
     void poll_share_worker();
     void start_chat_refresh();
@@ -54,7 +60,12 @@ private:
     std::atomic<std::uint64_t> transfer_current_{};
     std::atomic<std::uint64_t> transfer_total_{};
     std::atomic<bool> transfer_cancel_requested_{};
-    bool touch_active_{};
+    std::array<std::uint32_t, 4> dir_hold_frames_{};
+    bool touch_down_{};
+    std::int32_t touch_start_x_{};
+    std::int32_t touch_start_y_{};
+    std::int32_t touch_last_x_{};
+    std::int32_t touch_last_y_{};
     std::uint32_t automation_frame_{};
     bool automation_send_started_{};
     std::uint64_t automation_paused_frames_{};

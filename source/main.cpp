@@ -27,6 +27,7 @@
 #include <string>
 #include <thread>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <vector>
@@ -387,6 +388,17 @@ int main(int argc, char **argv) {
                 std::string probe_error;
                 if (fetch_probe_config(probe, probe_contents, probe_error)) {
                     config = nxgallery::parse_telegram_config(probe_contents);
+                    if (config && !probe_mode) {
+                        (void)mkdir("sdmc:/switch", 0777);
+                        (void)mkdir("sdmc:/switch/nxgallery", 0777);
+                        std::FILE *out = std::fopen(kTelegramConfigPath, "wb");
+                        const bool persisted = out != nullptr &&
+                            std::fwrite(probe_contents.data(), 1, probe_contents.size(),
+                                        out) == probe_contents.size();
+                        if (out != nullptr) std::fclose(out);
+                        std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config_persist path=%s result=%s\n",
+                                    kTelegramConfigPath, persisted ? "pass" : "fail");
+                    }
                     OPENSSL_cleanse(probe_contents.data(), probe_contents.size());
                 } else {
                     config.error = std::move(probe_error);
@@ -433,6 +445,7 @@ int main(int argc, char **argv) {
     options.SetPlServiceType(PlServiceType_User);
     options.AddDefaultSharedFont(PlSharedFontType_Standard);
     options.AddDefaultSharedFont(PlSharedFontType_KO);
+    options.AddDefaultSharedFont(PlSharedFontType_NintendoExt);
     for (const std::uint32_t size : {16U, 17U, 18U, 19U, 20U, 22U, 23U,
                                      24U, 25U, 29U, 32U, 34U, 48U}) {
         options.AddExtraDefaultFontSize(size);

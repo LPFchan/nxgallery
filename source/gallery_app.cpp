@@ -6,6 +6,8 @@
 #include <array>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,30 +17,75 @@ namespace {
 
 constexpr std::int32_t kWidth = 1280;
 constexpr std::int32_t kHeight = 720;
-constexpr pu::ui::Color kBackground{238, 238, 238, 255};
-constexpr pu::ui::Color kPanel{250, 250, 250, 255};
-constexpr pu::ui::Color kInk{42, 42, 46, 255};
-constexpr pu::ui::Color kMuted{112, 112, 118, 255};
-constexpr pu::ui::Color kAccent{0, 190, 220, 255};
-constexpr pu::ui::Color kDark{19, 20, 24, 255};
+
+// Horizon light-theme palette, matched to the stock Album applet.
+constexpr pu::ui::Color kBackground{235, 235, 235, 255};
+constexpr pu::ui::Color kInk{45, 45, 45, 255};
+constexpr pu::ui::Color kMuted{125, 125, 130, 255};
+constexpr pu::ui::Color kRule{45, 45, 45, 255};
+constexpr pu::ui::Color kDialogFace{240, 240, 240, 255};
+constexpr pu::ui::Color kDialogRule{201, 201, 205, 255};
+constexpr pu::ui::Color kDialogAction{50, 80, 240, 255};
+constexpr pu::ui::Color kRowFace{252, 252, 252, 255};
+constexpr pu::ui::Color kBlack{0, 0, 0, 255};
 constexpr pu::ui::Color kWhite{255, 255, 255, 255};
-constexpr pu::ui::Color kSuccess{48, 170, 88, 255};
-constexpr pu::ui::Color kFailure{210, 66, 74, 255};
-constexpr std::int32_t kPickerPanelX = 190;
-constexpr std::int32_t kPickerPanelY = 64;
-constexpr std::int32_t kPickerPanelWidth = 900;
-constexpr std::int32_t kPickerPanelHeight = 592;
-constexpr std::int32_t kPickerRowX = 220;
-constexpr std::int32_t kPickerRowY = 172;
-constexpr std::int32_t kPickerRowWidth = 840;
-constexpr std::int32_t kPickerRowHeight = 46;
-constexpr std::int32_t kPickerRowStride = 52;
-constexpr std::size_t kPickerVisibleRows = 7;
-constexpr std::int32_t kPickerCancelX = 240;
-constexpr std::int32_t kPickerSendX = 820;
+constexpr pu::ui::Color kOverlayBar{13, 13, 15, 205};
+constexpr pu::ui::Color kOverlayInk{225, 225, 230, 255};
+constexpr pu::ui::Color kAccent{0, 195, 227, 255};
+constexpr pu::ui::Color kSuccess{40, 155, 80, 255};
+constexpr pu::ui::Color kFailure{200, 55, 65, 255};
+
+// Album grid: 4 columns x 3 rows of 16:9 cells between the header and footer rules.
+constexpr std::int32_t kHeaderRuleY = 88;
+constexpr std::int32_t kFooterRuleY = 647;
+constexpr std::int32_t kRuleInsetX = 30;
+constexpr std::int32_t kGridX = 40;
+constexpr std::int32_t kGridY = 104;
+constexpr std::int32_t kCellWidth = 294;
+constexpr std::int32_t kCellHeight = 165;
+constexpr std::int32_t kCellStrideX = 302;
+constexpr std::int32_t kCellStrideY = 173;
+
+// Viewer overlay bars and touch chips.
+constexpr std::int32_t kViewerBarHeight = 64;
+constexpr std::int32_t kBackChipX = 24;
+constexpr std::int32_t kBackChipY = 12;
+constexpr std::int32_t kBackChipWidth = 140;
+constexpr std::int32_t kShareChipX = 1116;
+constexpr std::int32_t kShareChipY = 12;
+constexpr std::int32_t kShareChipWidth = 140;
+constexpr std::int32_t kChipHeight = 40;
+constexpr std::int32_t kTimelineX = 40;
+constexpr std::int32_t kTimelineY = 634;
+constexpr std::int32_t kTimelineWidth = 980;
+
+// Chat picker, sized like a Horizon system dialog.
+constexpr std::int32_t kPickerX = 200;
+constexpr std::int32_t kPickerY = 100;
+constexpr std::int32_t kPickerWidth = 880;
+constexpr std::int32_t kPickerHeight = 520;
+constexpr std::int32_t kPickerRowX = 232;
+constexpr std::int32_t kPickerRowY = 200;
+constexpr std::int32_t kPickerRowWidth = 816;
+constexpr std::int32_t kPickerRowHeight = 52;
+constexpr std::int32_t kPickerRowStride = 56;
+constexpr std::size_t kPickerVisibleRows = 6;
 constexpr std::int32_t kPickerButtonY = 548;
-constexpr std::int32_t kPickerButtonWidth = 220;
-constexpr std::int32_t kPickerButtonHeight = 54;
+constexpr std::int32_t kPickerButtonHeight = 72;
+
+// Sending and result dialogs share one footprint.
+constexpr std::int32_t kDialogX = 280;
+constexpr std::int32_t kDialogY = 220;
+constexpr std::int32_t kDialogWidth = 720;
+constexpr std::int32_t kDialogHeight = 280;
+constexpr std::int32_t kDialogButtonY = 428;
+constexpr std::int32_t kDialogButtonHeight = 72;
+constexpr std::int32_t kDialogRadius = 6;
+
+// Touch: a press that travels at least this far before release is a swipe.
+constexpr std::int32_t kSwipeThreshold = 60;
+
+enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back };
 
 void render_outline(pu::ui::render::Renderer::Ref &drawer, pu::ui::Color color,
                     std::int32_t x, std::int32_t y, std::int32_t width,
@@ -89,8 +136,21 @@ public:
     s32 GetHeight() override { return kHeight; }
     void OnInput(const u64, const u64, const u64, const pu::ui::TouchPoint) override {}
 
+    // Which hint label (if any) sits under a touch point rendered last frame.
+    std::optional<HintTag> hint_at(std::int32_t x, std::int32_t y) const {
+        for (const HintZone &zone : hint_zones_) {
+            if (x >= zone.x && x < zone.x + zone.width &&
+                y >= zone.y && y < zone.y + zone.height) {
+                return zone.tag;
+            }
+        }
+        return std::nullopt;
+    }
+
     void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32, const s32) override {
         text_slot_ = 0;
+        hint_zones_.clear();
+        ++pulse_frame_;
         switch (controller_.screen()) {
             case Screen::Grid: render_grid(drawer); break;
             case Screen::Viewer: render_viewer(drawer); break;
@@ -107,6 +167,18 @@ public:
 private:
     struct TextSlot { std::string key; pu::sdl2::Texture texture{nullptr}; };
     struct ImageSlot { std::string path; pu::sdl2::Texture texture{nullptr}; };
+    struct HintZone {
+        std::int32_t x;
+        std::int32_t y;
+        std::int32_t width;
+        std::int32_t height;
+        HintTag tag;
+    };
+    struct HintItem {
+        std::string text;
+        std::optional<HintTag> tag;
+        std::int32_t gap_after;
+    };
 
     void clear_textures() {
         for (auto &slot : text_slots_) pu::ui::render::DeleteTexture(slot.texture);
@@ -115,9 +187,8 @@ private:
         image_slots_.clear();
     }
 
-    void text(pu::ui::render::Renderer::Ref &drawer, const std::string &value,
-              std::int32_t size, pu::ui::Color color, std::int32_t x,
-              std::int32_t y) {
+    pu::sdl2::Texture text_texture(const std::string &value, std::int32_t size,
+                                   pu::ui::Color color) {
         const std::string key = std::to_string(size) + ":" +
             std::to_string(color.r) + ":" + std::to_string(color.g) + ":" +
             std::to_string(color.b) + ":" + std::to_string(color.a) + ":" + value;
@@ -130,7 +201,68 @@ private:
                 pu::ui::MakeDefaultFontName(static_cast<std::uint32_t>(size)),
                 value, color, 0, 0);
         }
-        if (slot.texture != nullptr) drawer->RenderTexture(slot.texture, x, y);
+        return slot.texture;
+    }
+
+    void text(pu::ui::render::Renderer::Ref &drawer, const std::string &value,
+              std::int32_t size, pu::ui::Color color, std::int32_t x,
+              std::int32_t y) {
+        pu::sdl2::Texture texture = text_texture(value, size, color);
+        if (texture != nullptr) drawer->RenderTexture(texture, x, y);
+    }
+
+    void text_right(pu::ui::render::Renderer::Ref &drawer, const std::string &value,
+                    std::int32_t size, pu::ui::Color color, std::int32_t right_x,
+                    std::int32_t y) {
+        pu::sdl2::Texture texture = text_texture(value, size, color);
+        if (texture == nullptr) return;
+        drawer->RenderTexture(texture, right_x - pu::ui::render::GetTextureWidth(texture), y);
+    }
+
+    void text_center(pu::ui::render::Renderer::Ref &drawer, const std::string &value,
+                     std::int32_t size, pu::ui::Color color, std::int32_t center_x,
+                     std::int32_t y) {
+        pu::sdl2::Texture texture = text_texture(value, size, color);
+        if (texture == nullptr) return;
+        drawer->RenderTexture(texture, center_x - pu::ui::render::GetTextureWidth(texture) / 2, y);
+    }
+
+    // Renders hint labels right-aligned, recording a full-bar-height touch zone
+    // for every tagged label.
+    void hints(pu::ui::render::Renderer::Ref &drawer, const std::vector<HintItem> &items,
+               std::int32_t right_x, std::int32_t text_y, std::int32_t size,
+               pu::ui::Color color, std::int32_t zone_y, std::int32_t zone_height) {
+        std::vector<pu::sdl2::Texture> textures;
+        std::int32_t total = 0;
+        for (std::size_t index = 0; index < items.size(); ++index) {
+            textures.push_back(text_texture(items[index].text, size, color));
+            if (textures.back() != nullptr) {
+                total += pu::ui::render::GetTextureWidth(textures.back());
+            }
+            if (index + 1 < items.size()) total += items[index].gap_after;
+        }
+        std::int32_t x = right_x - total;
+        for (std::size_t index = 0; index < items.size(); ++index) {
+            const pu::sdl2::Texture texture = textures[index];
+            if (texture == nullptr) continue;
+            const std::int32_t width = pu::ui::render::GetTextureWidth(texture);
+            drawer->RenderTexture(texture, x, text_y);
+            if (items[index].tag) {
+                hint_zones_.push_back({x - 24, zone_y, width + 48, zone_height,
+                                       *items[index].tag});
+            }
+            x += width + items[index].gap_after;
+        }
+    }
+
+    // Stock Horizon selections breathe between two cyans on a ~1.5 s cycle.
+    pu::ui::Color pulse_color() const {
+        const std::uint32_t phase = pulse_frame_ % 90U;
+        const double t = phase < 45U ? phase / 45.0 : (90U - phase) / 45.0;
+        auto mix = [t](std::uint8_t from, std::uint8_t to) {
+            return static_cast<std::uint8_t>(from + (to - from) * t);
+        };
+        return {mix(0, 90), mix(195, 225), mix(227, 255), 255};
     }
 
     pu::sdl2::Texture image(const std::string &path) {
@@ -190,156 +322,232 @@ private:
                                   render_height, {}, {}, {}));
     }
 
-    void header(pu::ui::render::Renderer::Ref &drawer, const std::string &title) {
-        drawer->RenderRectangleFill(kPanel, 0, 0, kWidth, 72);
-        text(drawer, title, 30, kInk, 42, 18);
-        if (!status_.empty()) text(drawer, clipped(status_, 78), 18, kMuted, 420, 25);
-    }
-
-    void footer(pu::ui::render::Renderer::Ref &drawer, const std::string &hints,
-                pu::ui::Color background = kPanel, pu::ui::Color ink = kInk) {
-        drawer->RenderRectangleFill(background, 0, 665, kWidth, 55);
-        text(drawer, hints, 22, ink, 48, 680);
+    void dialog_face(pu::ui::render::Renderer::Ref &drawer, std::uint8_t dim_alpha,
+                     std::int32_t x, std::int32_t y, std::int32_t width,
+                     std::int32_t height, std::int32_t button_row_y) {
+        drawer->RenderRectangleFill({0, 0, 0, dim_alpha}, 0, 0, kWidth, kHeight);
+        drawer->RenderRoundedRectangleFill(kDialogFace, x, y, width, height, kDialogRadius);
+        drawer->RenderRectangleFill(kDialogRule, x, button_row_y, width, 1);
     }
 
     void render_grid(pu::ui::render::Renderer::Ref &drawer) {
         drawer->RenderRectangleFill(kBackground, 0, 0, kWidth, kHeight);
-        header(drawer, "Album");
+        text(drawer, "Album", 29, kInk, 60, 27);
+        drawer->RenderRectangleFill(kRule, kRuleInsetX, kHeaderRuleY,
+                                    kWidth - 2 * kRuleInsetX, 1);
+        drawer->RenderRectangleFill(kRule, kRuleInsetX, kFooterRuleY,
+                                    kWidth - 2 * kRuleInsetX, 1);
         const auto &media = controller_.media();
-        if (media.empty()) {
-            text(drawer, "No captures found", 34, kInk, 470, 300);
-            text(drawer, "Expected SD path: /Nintendo/Album", 20, kMuted, 450, 350);
+        if (!media.empty()) {
+            text_right(drawer, std::to_string(media.size()) + " captures", 18,
+                       kMuted, kWidth - 60, 40);
+        } else {
+            text_center(drawer, "There are no screenshots or videos.", 25, kInk,
+                        kWidth / 2, 320);
+            text_center(drawer, "Captures taken with the Capture Button will appear here.",
+                        18, kMuted, kWidth / 2, 366);
         }
         const std::size_t start = controller_.grid_page_start();
-        constexpr std::int32_t cell_width = 276;
-        constexpr std::int32_t cell_height = 160;
-        for (std::size_t visible = 0; visible < GalleryController::kGridColumns * GalleryController::kVisibleRows; ++visible) {
+        for (std::size_t visible = 0;
+             visible < GalleryController::kGridColumns * GalleryController::kVisibleRows;
+             ++visible) {
             const std::size_t index = start + visible;
             if (index >= media.size()) break;
             const std::int32_t column = static_cast<std::int32_t>(visible % GalleryController::kGridColumns);
             const std::int32_t row = static_cast<std::int32_t>(visible / GalleryController::kGridColumns);
-            const std::int32_t x = 44 + column * 303;
-            const std::int32_t y = 88 + row * 184;
-            drawer->RenderRectangleFill(kDark, x, y, cell_width, cell_height);
-            fitted_image(drawer, thumbnail(media[index]), x, y, cell_width, cell_height);
-            if (index == controller_.selected_media_index()) render_outline(drawer, kAccent, x - 5, y - 5, cell_width + 10, cell_height + 10, 5);
+            const std::int32_t x = kGridX + column * kCellStrideX;
+            const std::int32_t y = kGridY + row * kCellStrideY;
+            drawer->RenderRectangleFill(kBlack, x, y, kCellWidth, kCellHeight);
+            fitted_image(drawer, thumbnail(media[index]), x, y, kCellWidth, kCellHeight);
+            if (media[index].kind == MediaKind::Video) {
+                drawer->RenderRoundedRectangleFill({0, 0, 0, 170}, x + kCellWidth - 58,
+                                                   y + kCellHeight - 32, 50, 24, 4);
+                text(drawer, "▶", 16, kWhite, x + kCellWidth - 45, y + kCellHeight - 30);
+            }
         }
-        footer(drawer, "A  View                                      +  hbmenu");
+        // Drawn after every cell so the thick border is never clipped by a
+        // neighbouring thumbnail.
+        const std::size_t selected = controller_.selected_media_index();
+        if (!media.empty() && selected >= start &&
+            selected < start + GalleryController::kGridColumns * GalleryController::kVisibleRows) {
+            const std::size_t visible = selected - start;
+            const std::int32_t x = kGridX +
+                static_cast<std::int32_t>(visible % GalleryController::kGridColumns) * kCellStrideX;
+            const std::int32_t y = kGridY +
+                static_cast<std::int32_t>(visible / GalleryController::kGridColumns) * kCellStrideY;
+            render_outline(drawer, kWhite, x - 3, y - 3,
+                           kCellWidth + 6, kCellHeight + 6, 3);
+            render_outline(drawer, pulse_color(), x - 9, y - 9,
+                           kCellWidth + 18, kCellHeight + 18, 6);
+        }
+        text(drawer, "build " __DATE__ " " __TIME__, 16, kMuted, 40, 694);
+        if (!status_.empty()) text(drawer, clipped(status_, 64), 18, kMuted, 40, 668);
+        hints(drawer, {{" Quit", HintTag::Hbmenu, 44},
+                       {" View", HintTag::View, 0}},
+              kWidth - 60, 663, 22, kInk, kFooterRuleY + 1, kHeight - kFooterRuleY - 1);
     }
 
     void render_viewer(pu::ui::render::Renderer::Ref &drawer) {
-        drawer->RenderRectangleFill(kDark, 0, 0, kWidth, kHeight);
-        drawer->RenderRoundedRectangle({42, 44, 50, 255}, 28, 22, 132, 54, 12);
-        text(drawer, "Back", 22, kWhite, 66, 36);
-        drawer->RenderRoundedRectangle(kAccent, 1050, 22, 190, 54, 12);
-        text(drawer, "Share", 22, kDark, 1113, 36);
+        drawer->RenderRectangleFill(kBlack, 0, 0, kWidth, kHeight);
         const auto &media = controller_.media();
-        if (!media.empty()) {
-            const MediaItem &selected = media[controller_.selected_media_index()];
-            if (selected.kind == MediaKind::Photo) fitted_image(drawer, image(selected.path), 80, 90, 1120, 520);
-            else {
-                pu::sdl2::Texture frame = video_player_.texture();
-                fitted_image(drawer, frame != nullptr ? frame : thumbnail(selected),
-                             80, 90, 1120, 520);
-                const std::uint64_t position = video_player_.position_ms();
-                const std::uint64_t duration = video_player_.duration_ms();
-                constexpr std::int32_t timeline_x = 180;
-                constexpr std::int32_t timeline_y = 596;
-                constexpr std::int32_t timeline_width = 900;
-                drawer->RenderRoundedRectangle({78, 82, 90, 255}, timeline_x,
-                                               timeline_y, timeline_width, 10, 5);
-                if (duration > 0 && position > 0) {
-                    const std::int32_t fill_width = std::max<std::int32_t>(
-                        6, static_cast<std::int32_t>(
-                            std::min<std::uint64_t>(duration, position) * timeline_width /
-                            duration));
-                    drawer->RenderRoundedRectangle(kAccent, timeline_x, timeline_y,
-                                                   fill_width, 10,
-                                                   std::min<std::int32_t>(5, fill_width / 2));
-                }
-                text(drawer, playback_time(position) + " / " + playback_time(duration),
-                     16, kWhite, 1090, 588);
-                const std::string playback_status = video_player_.status();
-                if (!playback_status.empty()) {
-                    text(drawer, clipped(playback_status, 72), 17, kWhite, 180, 614);
-                }
-            }
-            text(drawer, clipped(selected.filename, 58), 18, kWhite, 34, 642);
-        }
         const bool video_selected = !media.empty() &&
             media[controller_.selected_media_index()].kind == MediaKind::Video;
-        footer(drawer, video_selected
-            ? "A  Play/Pause    B  Back    X  Share    ◀/▶  Previous/Next    +  hbmenu"
-            : "B  Back          X  Share          ◀/▶  Previous/Next          +  hbmenu",
-            kDark, kWhite);
+        if (!media.empty()) {
+            const MediaItem &selected = media[controller_.selected_media_index()];
+            if (selected.kind == MediaKind::Photo) {
+                fitted_image(drawer, image(selected.path), 0, 0, kWidth, kHeight);
+            } else {
+                pu::sdl2::Texture frame = video_player_.texture();
+                fitted_image(drawer, frame != nullptr ? frame : thumbnail(selected),
+                             0, 0, kWidth, kHeight);
+            }
+        }
+
+        drawer->RenderRectangleFill(kOverlayBar, 0, 0, kWidth, kViewerBarHeight);
+        drawer->RenderRoundedRectangleFill({255, 255, 255, 34}, kBackChipX, kBackChipY,
+                                           kBackChipWidth, kChipHeight, 8);
+        text_center(drawer, " Back", 20, kWhite,
+                    kBackChipX + kBackChipWidth / 2, kBackChipY + 8);
+        drawer->RenderRoundedRectangleFill(kAccent, kShareChipX, kShareChipY,
+                                           kShareChipWidth, kChipHeight, 8);
+        text_center(drawer, " Share", 20, kBlack,
+                    kShareChipX + kShareChipWidth / 2, kShareChipY + 8);
+        if (!media.empty()) {
+            text(drawer, clipped(media[controller_.selected_media_index()].filename, 48),
+                 20, kOverlayInk, 190, 20);
+        }
+
+        drawer->RenderRectangleFill(kOverlayBar, 0, kHeight - kViewerBarHeight,
+                                    kWidth, kViewerBarHeight);
+        if (!media.empty()) {
+            text(drawer, std::to_string(controller_.selected_media_index() + 1) +
+                 " / " + std::to_string(media.size()), 18, kOverlayInk, 40, 678);
+        }
+        std::vector<HintItem> viewer_hints;
+        if (video_selected) viewer_hints.push_back({" Play/Pause", HintTag::PlayPause, 36});
+        viewer_hints.push_back({"", HintTag::Prev, 8});
+        viewer_hints.push_back({"", HintTag::Next, 10});
+        viewer_hints.push_back({"Browse", HintTag::Next, 36});
+        viewer_hints.push_back({" Share", HintTag::Share, 36});
+        viewer_hints.push_back({" Back", HintTag::Back, 0});
+        hints(drawer, viewer_hints, kWidth - 40, 676, 20, kWhite,
+              kHeight - kViewerBarHeight, kViewerBarHeight);
+
+        if (video_selected && controller_.screen() == Screen::Viewer) {
+            const std::uint64_t position = video_player_.position_ms();
+            const std::uint64_t duration = video_player_.duration_ms();
+            drawer->RenderRoundedRectangleFill({255, 255, 255, 60}, kTimelineX,
+                                               kTimelineY, kTimelineWidth, 8, 4);
+            if (duration > 0 && position > 0) {
+                const std::int32_t fill_width = std::max<std::int32_t>(
+                    8, static_cast<std::int32_t>(
+                        std::min<std::uint64_t>(duration, position) * kTimelineWidth /
+                        duration));
+                drawer->RenderRoundedRectangleFill(kAccent, kTimelineX, kTimelineY,
+                                                   fill_width, 8, 4);
+            }
+            text_right(drawer, playback_time(position) + " / " + playback_time(duration),
+                       18, kWhite, kWidth - 40, 626);
+            const std::string playback_status = video_player_.status();
+            if (!playback_status.empty()) {
+                text(drawer, clipped(playback_status, 72), 17, kOverlayInk, 40, 600);
+            }
+        }
     }
 
     void render_chat_picker(pu::ui::render::Renderer::Ref &drawer) {
-        drawer->RenderRectangleFill({0, 0, 0, 150}, 0, 0, kWidth, kHeight);
-        drawer->RenderRectangleFill(kPanel, kPickerPanelX, kPickerPanelY,
-                                    kPickerPanelWidth, kPickerPanelHeight);
-        text(drawer, "Share to Telegram", 30, kInk, 232, 94);
-        text(drawer, clipped(status_, 72), 17, kMuted, 232, 136);
+        dialog_face(drawer, 140, kPickerX, kPickerY, kPickerWidth, kPickerHeight,
+                    kPickerButtonY);
+        text_center(drawer, "Share to Telegram", 25, kInk, kWidth / 2, 128);
+        if (!status_.empty()) {
+            text_center(drawer, clipped(status_, 70), 18, kMuted, kWidth / 2, 166);
+        }
         const auto &chats = controller_.chats();
         if (chats.empty()) {
-            text(drawer, "No chats discovered yet.", 25, kInk, 420, 300);
-            text(drawer, "Message the bot or add a chat=ID|Title entry.", 18, kMuted, 375, 350);
+            text_center(drawer, "No destinations found.", 23, kInk, kWidth / 2, 300);
+            text_center(drawer, "Message the bot or add a chat=ID|Title entry.",
+                        18, kMuted, kWidth / 2, 344);
         }
         const std::size_t selected = controller_.selected_chat_index();
-        const std::size_t start = selected >= 6 ? selected - 5 : 0;
+        const std::size_t start = selected >= kPickerVisibleRows
+            ? selected - (kPickerVisibleRows - 1) : 0;
         for (std::size_t row = 0; row < kPickerVisibleRows && start + row < chats.size(); ++row) {
             const std::size_t index = start + row;
             const std::int32_t row_y = kPickerRowY +
                 static_cast<std::int32_t>(row) * kPickerRowStride;
             if (index == selected) {
-                drawer->RenderRectangleFill({218, 246, 250, 255}, kPickerRowX,
-                                            row_y, kPickerRowWidth, kPickerRowHeight);
+                drawer->RenderRoundedRectangleFill(kRowFace, kPickerRowX, row_y,
+                                                   kPickerRowWidth, kPickerRowHeight, 6);
+                const pu::ui::Color pulse = pulse_color();
+                for (std::int32_t inset = 0; inset < 3; ++inset) {
+                    drawer->RenderRoundedRectangle(pulse, kPickerRowX - inset,
+                                                   row_y - inset,
+                                                   kPickerRowWidth + 2 * inset,
+                                                   kPickerRowHeight + 2 * inset, 6);
+                }
+            } else if (row + 1 < kPickerVisibleRows && index + 1 < chats.size()) {
+                drawer->RenderRectangleFill({215, 215, 218, 255}, kPickerRowX,
+                                            row_y + kPickerRowHeight + 1,
+                                            kPickerRowWidth, 1);
             }
-            text(drawer, clipped(chats[index].title, 46), 23, kInk, 250, row_y + 7);
-            text(drawer, chats[index].type, 16, kMuted, 890, row_y + 12);
+            text(drawer, clipped(chats[index].title, 44), 23, kInk,
+                 kPickerRowX + 16, row_y + 11);
+            text_right(drawer, chats[index].type, 16, kMuted,
+                       kPickerRowX + kPickerRowWidth - 16, row_y + 17);
         }
-        drawer->RenderRoundedRectangle({224, 224, 228, 255}, kPickerCancelX,
-                                       kPickerButtonY, kPickerButtonWidth,
-                                       kPickerButtonHeight, 10);
-        text(drawer, "Cancel", 20, kInk, 318, kPickerButtonY + 16);
-        drawer->RenderRoundedRectangle(kAccent, kPickerSendX, kPickerButtonY,
-                                       kPickerButtonWidth, kPickerButtonHeight, 10);
-        text(drawer, "Send", 20, kDark, 906, kPickerButtonY + 16);
-        text(drawer, "A  Send          Y  Refresh          B  Cancel", 18, kMuted, 363, 620);
+        const std::int32_t third = kPickerWidth / 3;
+        drawer->RenderRectangleFill(kDialogRule, kPickerX + third, kPickerButtonY,
+                                    1, kPickerButtonHeight);
+        drawer->RenderRectangleFill(kDialogRule, kPickerX + 2 * third, kPickerButtonY,
+                                    1, kPickerButtonHeight);
+        const std::int32_t label_y = kPickerButtonY + 20;
+        text_center(drawer, " Cancel", 24, kDialogAction,
+                    kPickerX + third / 2, label_y);
+        text_center(drawer, " Refresh", 24, kDialogAction,
+                    kPickerX + third + third / 2, label_y);
+        text_center(drawer, " Send", 24, kDialogAction,
+                    kPickerX + 2 * third + third / 2, label_y);
     }
 
     void render_sending(pu::ui::render::Renderer::Ref &drawer) {
-        drawer->RenderRectangleFill({0, 0, 0, 170}, 0, 0, kWidth, kHeight);
-        drawer->RenderRectangleFill(kPanel, 390, 230, 500, 250);
+        dialog_face(drawer, 170, kDialogX, kDialogY, kDialogWidth, kDialogHeight,
+                    kDialogButtonY);
         const bool cancelling = transfer_cancel_requested_.load();
-        text(drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
-             29, kInk, cancelling ? 486 : 470, 278);
+        text_center(drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
+                    25, kInk, kWidth / 2, 258);
         const std::uint64_t current = transfer_current_.load();
         const std::uint64_t total = transfer_total_.load();
         const std::uint64_t percent = total > 0
             ? std::min<std::uint64_t>(100, current * 100 / total) : 0;
-        drawer->RenderRoundedRectangle({176, 226, 234, 255}, 440, 350, 400, 24, 12);
+        constexpr std::int32_t bar_x = 360;
+        constexpr std::int32_t bar_width = 560;
+        drawer->RenderRoundedRectangleFill({205, 205, 208, 255}, bar_x, 330,
+                                           bar_width, 12, 6);
         if (percent > 0) {
             const std::int32_t fill_width = std::max<std::int32_t>(
-                8, static_cast<std::int32_t>(percent * 4));
-            drawer->RenderRoundedRectangle(kAccent, 440, 350,
-                                           fill_width, 24,
-                                           std::min<std::int32_t>(12, fill_width / 2));
+                12, static_cast<std::int32_t>(percent * bar_width / 100));
+            drawer->RenderRoundedRectangleFill(kAccent, bar_x, 330, fill_width, 12, 6);
         }
-        text(drawer, total > 0 ? std::to_string(percent) + "%" : "Preparing upload...",
-             19, kMuted, total > 0 ? 615 : 555, 390);
-        text(drawer, cancelling ? "Waiting for Telegram to stop" : "B  Cancel transfer",
-             18, kMuted, cancelling ? 520 : 555, 433);
+        text_center(drawer, total > 0 ? std::to_string(percent) + "%" : "Preparing upload...",
+                    18, kMuted, kWidth / 2, 358);
+        if (cancelling) {
+            text_center(drawer, "Waiting for Telegram to stop", 24, kMuted,
+                        kWidth / 2, kDialogButtonY + 20);
+        } else {
+            text_center(drawer, " Cancel", 24, kDialogAction,
+                        kWidth / 2, kDialogButtonY + 20);
+        }
     }
 
     void render_result(pu::ui::render::Renderer::Ref &drawer) {
-        drawer->RenderRectangleFill({0, 0, 0, 170}, 0, 0, kWidth, kHeight);
-        drawer->RenderRectangleFill(kPanel, 320, 220, 640, 260);
+        dialog_face(drawer, 170, kDialogX, kDialogY, kDialogWidth, kDialogHeight,
+                    kDialogButtonY);
         const bool success = controller_.share_succeeded();
-        text(drawer, success ? "Shared" : "Could not share", 32,
-             success ? kSuccess : kFailure, success ? 570 : 505, 270);
-        text(drawer, clipped(controller_.result_message(), 62), 20, kInk, 390, 345);
-        text(drawer, "A/B  Close", 19, kMuted, 575, 430);
+        text_center(drawer, success ? "Shared" : "Could not share", 29,
+                    success ? kSuccess : kFailure, kWidth / 2, 252);
+        text_center(drawer, clipped(controller_.result_message(), 58), 20, kInk,
+                    kWidth / 2, 322);
+        text_center(drawer, "OK", 24, kDialogAction, kWidth / 2, kDialogButtonY + 20);
     }
 
     GalleryController &controller_;
@@ -350,7 +558,9 @@ private:
     std::atomic<bool> &transfer_cancel_requested_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
+    std::vector<HintZone> hint_zones_;
     std::size_t text_slot_{};
+    std::uint32_t pulse_frame_{};
 };
 
 GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
@@ -378,8 +588,8 @@ void GalleryApplication::OnLoad() {
                                                 transfer_cancel_requested_);
     layout_->Add(element_);
     LoadLayout(layout_);
-    SetOnInput([this](const u64 down, const u64, const u64, const pu::ui::TouchPoint touch) {
-        on_input(down, touch);
+    SetOnInput([this](const u64 down, const u64, const u64 held, const pu::ui::TouchPoint touch) {
+        on_input(down, held, touch);
     });
     AddRenderCallback([this] {
         if (video_player_) {
@@ -514,15 +724,94 @@ void GalleryApplication::poll_share_worker() {
     controller_.finish_share(result->success, std::move(result->message));
 }
 
+void GalleryApplication::exit_to_hbmenu() {
+    const bool supported = envHasNextLoad();
+    const Result result = supported
+        ? envSetNextLoad("sdmc:/hbmenu.nro", "sdmc:/hbmenu.nro") : 0;
+    std::printf("NXGALLERY_DIAGNOSTIC event=exit target=hbmenu supported=%s rc=0x%08x\n",
+                supported ? "true" : "false", static_cast<unsigned int>(result));
+    std::fflush(stdout);
+    if (video_player_) video_player_->stop();
+    Close();
+}
+
+void GalleryApplication::toggle_video_playback() {
+    const auto &media = controller_.media();
+    if (media.empty() ||
+        media[controller_.selected_media_index()].kind != MediaKind::Video) {
+        return;
+    }
+    if (video_player_->active()) video_player_->toggle_pause();
+    else video_player_->play(media[controller_.selected_media_index()]);
+}
+
+void GalleryApplication::on_swipe(std::int32_t dx, std::int32_t dy) {
+    const bool vertical = std::abs(dy) >= std::abs(dx);
+    if (controller_.screen() == Screen::Grid && vertical) {
+        const auto &media = controller_.media();
+        if (media.empty()) return;
+        constexpr std::size_t page =
+            GalleryController::kGridColumns * GalleryController::kVisibleRows;
+        const std::size_t index = controller_.selected_media_index();
+        if (dy < 0) controller_.select_media(std::min(index + page, media.size() - 1));
+        else controller_.select_media(index >= page ? index - page : 0);
+        return;
+    }
+    if (controller_.screen() == Screen::Viewer && !vertical) {
+        if (video_player_) video_player_->stop();
+        controller_.handle(dx < 0 ? Action::Right : Action::Left);
+        return;
+    }
+    if (controller_.screen() == Screen::ChatPicker && vertical) {
+        const auto &chats = controller_.chats();
+        if (chats.empty()) return;
+        const std::size_t step = 6;
+        const std::size_t index = controller_.selected_chat_index();
+        if (dy < 0) controller_.select_chat(std::min(index + step, chats.size() - 1));
+        else controller_.select_chat(index >= step ? index - step : 0);
+    }
+}
+
+bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
+    const auto tag = element_->hint_at(static_cast<std::int32_t>(touch.x),
+                                       static_cast<std::int32_t>(touch.y));
+    if (!tag) return false;
+    std::printf("NXGALLERY_DIAGNOSTIC event=touch_hint tag=%d\n",
+                static_cast<int>(*tag));
+    switch (*tag) {
+        case HintTag::View: controller_.handle(Action::Confirm); break;
+        case HintTag::Hbmenu: exit_to_hbmenu(); break;
+        case HintTag::PlayPause: toggle_video_playback(); break;
+        case HintTag::Prev:
+        case HintTag::Next:
+            if (video_player_) video_player_->stop();
+            controller_.handle(*tag == HintTag::Prev ? Action::Left : Action::Right);
+            break;
+        case HintTag::Share: open_chat_picker(); break;
+        case HintTag::Back:
+            if (video_player_) video_player_->stop();
+            controller_.handle(Action::Back);
+            break;
+    }
+    return true;
+}
+
 void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
+    if ((controller_.screen() == Screen::Grid ||
+         controller_.screen() == Screen::Viewer) && dispatch_hint(touch)) {
+        return;
+    }
     if (controller_.screen() == Screen::Grid) {
         const std::size_t start = controller_.grid_page_start();
-        for (std::size_t visible = 0; visible < GalleryController::kGridColumns * GalleryController::kVisibleRows; ++visible) {
+        for (std::size_t visible = 0;
+             visible < GalleryController::kGridColumns * GalleryController::kVisibleRows;
+             ++visible) {
             const std::size_t index = start + visible;
             if (index >= controller_.media().size()) break;
             const std::int32_t column = static_cast<std::int32_t>(visible % GalleryController::kGridColumns);
             const std::int32_t row = static_cast<std::int32_t>(visible / GalleryController::kGridColumns);
-            if (touch.HitsRegion(44 + column * 303, 88 + row * 184, 276, 160)) {
+            if (touch.HitsRegion(kGridX + column * kCellStrideX,
+                                 kGridY + row * kCellStrideY, kCellWidth, kCellHeight)) {
                 controller_.select_media(index);
                 controller_.handle(Action::Confirm);
                 return;
@@ -531,26 +820,35 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
         return;
     }
     if (controller_.screen() == Screen::Viewer) {
-        if (touch.HitsRegion(28, 22, 132, 54)) controller_.handle(Action::Back);
-        else if (touch.HitsRegion(1050, 22, 190, 54)) open_chat_picker();
+        if (touch.HitsRegion(kBackChipX, kBackChipY, kBackChipWidth, kChipHeight)) {
+            if (video_player_) video_player_->stop();
+            controller_.handle(Action::Back);
+        } else if (touch.HitsRegion(kShareChipX, kShareChipY, kShareChipWidth, kChipHeight)) {
+            open_chat_picker();
+        } else if (touch.HitsRegion(0, kViewerBarHeight, kWidth,
+                                    kHeight - 2 * kViewerBarHeight)) {
+            toggle_video_playback();
+        }
         return;
     }
     if (controller_.screen() == Screen::ChatPicker) {
-        if (touch.HitsRegion(kPickerCancelX, kPickerButtonY,
-                             kPickerButtonWidth, kPickerButtonHeight)) {
+        const std::int32_t third = kPickerWidth / 3;
+        if (touch.HitsRegion(kPickerX, kPickerButtonY, third, kPickerButtonHeight)) {
             controller_.handle(Action::Back);
             return;
         }
-        if (touch.HitsRegion(kPickerSendX, kPickerButtonY,
-                             kPickerButtonWidth, kPickerButtonHeight)) {
+        if (touch.HitsRegion(kPickerX + third, kPickerButtonY, third, kPickerButtonHeight)) {
+            refresh_chats_from_ui();
+            return;
+        }
+        if (touch.HitsRegion(kPickerX + 2 * third, kPickerButtonY, third, kPickerButtonHeight)) {
             auto request = controller_.handle(Action::Confirm);
             if (request) start_share(std::move(*request));
             return;
         }
         const std::size_t selected = controller_.selected_chat_index();
         const std::size_t start = selected >= 6 ? selected - 5 : 0;
-        for (std::size_t row = 0; row < kPickerVisibleRows &&
-             start + row < controller_.chats().size(); ++row) {
+        for (std::size_t row = 0; row < 6 && start + row < controller_.chats().size(); ++row) {
             if (touch.HitsRegion(kPickerRowX, kPickerRowY +
                                  static_cast<std::int32_t>(row) * kPickerRowStride,
                                  kPickerRowWidth, kPickerRowHeight)) {
@@ -560,24 +858,94 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
         }
         return;
     }
+    if (controller_.screen() == Screen::Sending) {
+        if (touch.HitsRegion(kDialogX, kDialogButtonY, kDialogWidth, kDialogButtonHeight)) {
+            transfer_cancel_requested_ = true;
+            status_ = "Cancelling Telegram transfer...";
+        }
+        return;
+    }
     if (controller_.screen() == Screen::Result) controller_.handle(Action::Confirm);
 }
 
-void GalleryApplication::on_input(std::uint64_t down, pu::ui::TouchPoint touch) {
-    if (touch.IsEmpty()) touch_active_ = false;
-    else if (!touch_active_) {
-        touch_active_ = true;
-        on_touch(touch);
+void GalleryApplication::refresh_chats_from_ui() {
+    if (!bot_) status_ = "Telegram is not configured";
+    else if (chat_refresh_worker_.joinable()) status_ = "Chat refresh already running";
+    else {
+        status_ = "Refreshing chats in background...";
+        start_chat_refresh();
     }
+}
+
+void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
+                                  pu::ui::TouchPoint touch) {
+    if (!touch.IsEmpty()) {
+        // Plutonium scales hid touch coordinates by its constexpr ScreenFactor
+        // (1920/1280 = 1.5); our canvas is 1280x720, so undo that here.
+        const std::int32_t tx = static_cast<std::int32_t>(touch.x / pu::ui::render::ScreenFactor);
+        const std::int32_t ty = static_cast<std::int32_t>(touch.y / pu::ui::render::ScreenFactor);
+        if (!touch_down_) {
+            touch_down_ = true;
+            touch_start_x_ = touch_last_x_ = tx;
+            touch_start_y_ = touch_last_y_ = ty;
+        } else {
+            touch_last_x_ = tx;
+            touch_last_y_ = ty;
+        }
+    } else if (touch_down_) {
+        touch_down_ = false;
+        const std::int32_t dx = touch_last_x_ - touch_start_x_;
+        const std::int32_t dy = touch_last_y_ - touch_start_y_;
+        // A press that starts on a hint bar is always a tap: the bars are
+        // button rows, and drift along them must not turn into a swipe.
+        bool on_hint_bar = false;
+        if (controller_.screen() == Screen::Grid) {
+            on_hint_bar = touch_start_y_ >= kFooterRuleY;
+        } else if (controller_.screen() == Screen::Viewer) {
+            on_hint_bar = touch_start_y_ < kViewerBarHeight ||
+                touch_start_y_ >= kHeight - kViewerBarHeight;
+        }
+        const bool swipe = !on_hint_bar &&
+            (std::abs(dx) >= kSwipeThreshold || std::abs(dy) >= kSwipeThreshold);
+        std::printf("NXGALLERY_DIAGNOSTIC event=touch result=%s start=%d,%d delta=%d,%d screen=%d\n",
+                    swipe ? "swipe" : "tap", touch_start_x_, touch_start_y_,
+                    dx, dy, static_cast<int>(controller_.screen()));
+        if (swipe) {
+            if (controller_.screen() != Screen::Sending &&
+                controller_.screen() != Screen::Result) {
+                on_swipe(dx, dy);
+            }
+        } else {
+            on_touch(pu::ui::TouchPoint{static_cast<u32>(touch_start_x_),
+                                        static_cast<u32>(touch_start_y_)});
+        }
+    }
+
+    // Held d-pad or stick directions repeat after a short delay.
+    static constexpr std::array<std::uint64_t, 4> kDirectionMasks{
+        HidNpadButton_AnyUp, HidNpadButton_AnyDown,
+        HidNpadButton_AnyLeft, HidNpadButton_AnyRight};
+    constexpr std::uint32_t kRepeatDelayFrames = 18;
+    constexpr std::uint32_t kRepeatIntervalFrames = 5;
+    std::uint64_t direction_fire = 0;
+    for (std::size_t index = 0; index < kDirectionMasks.size(); ++index) {
+        const std::uint64_t mask = kDirectionMasks[index];
+        if ((down & mask) != 0) {
+            dir_hold_frames_[index] = 0;
+            direction_fire |= mask;
+        } else if ((held & mask) != 0) {
+            ++dir_hold_frames_[index];
+            if (dir_hold_frames_[index] >= kRepeatDelayFrames &&
+                (dir_hold_frames_[index] - kRepeatDelayFrames) % kRepeatIntervalFrames == 0) {
+                direction_fire |= mask;
+            }
+        } else {
+            dir_hold_frames_[index] = 0;
+        }
+    }
+
     if ((down & HidNpadButton_Plus) != 0 && controller_.screen() != Screen::Sending) {
-        const bool supported = envHasNextLoad();
-        const Result result = supported
-            ? envSetNextLoad("sdmc:/hbmenu.nro", "sdmc:/hbmenu.nro") : 0;
-        std::printf("NXGALLERY_DIAGNOSTIC event=exit target=hbmenu supported=%s rc=0x%08x\n",
-                    supported ? "true" : "false", static_cast<unsigned int>(result));
-        std::fflush(stdout);
-        if (video_player_) video_player_->stop();
-        Close();
+        exit_to_hbmenu();
         return;
     }
     if (controller_.screen() == Screen::Sending) {
@@ -591,31 +959,26 @@ void GalleryApplication::on_input(std::uint64_t down, pu::ui::TouchPoint touch) 
         !controller_.media().empty() &&
         controller_.media()[controller_.selected_media_index()].kind == MediaKind::Video) {
         if ((down & HidNpadButton_A) != 0) {
-            if (video_player_->active()) video_player_->toggle_pause();
-            else video_player_->play(controller_.media()[controller_.selected_media_index()]);
+            toggle_video_playback();
             return;
         }
-        if ((down & (HidNpadButton_B | HidNpadButton_Left | HidNpadButton_Right)) != 0) {
+        if ((down & HidNpadButton_B) != 0 ||
+            (direction_fire & (HidNpadButton_AnyLeft | HidNpadButton_AnyRight)) != 0) {
             video_player_->stop();
         }
     }
     if ((down & HidNpadButton_X) != 0 && controller_.screen() == Screen::Viewer) { open_chat_picker(); return; }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::ChatPicker) {
-        if (!bot_) status_ = "Telegram is not configured";
-        else if (chat_refresh_worker_.joinable()) status_ = "Chat refresh already running";
-        else {
-            status_ = "Refreshing chats in background...";
-            start_chat_refresh();
-        }
+        refresh_chats_from_ui();
         return;
     }
     std::optional<ShareRequest> request;
     if ((down & HidNpadButton_A) != 0) request = controller_.handle(Action::Confirm);
     else if ((down & HidNpadButton_B) != 0) controller_.handle(Action::Back);
-    else if ((down & HidNpadButton_Left) != 0) controller_.handle(Action::Left);
-    else if ((down & HidNpadButton_Right) != 0) controller_.handle(Action::Right);
-    else if ((down & HidNpadButton_Up) != 0) controller_.handle(Action::Up);
-    else if ((down & HidNpadButton_Down) != 0) controller_.handle(Action::Down);
+    else if ((direction_fire & HidNpadButton_AnyLeft) != 0) controller_.handle(Action::Left);
+    else if ((direction_fire & HidNpadButton_AnyRight) != 0) controller_.handle(Action::Right);
+    else if ((direction_fire & HidNpadButton_AnyUp) != 0) controller_.handle(Action::Up);
+    else if ((direction_fire & HidNpadButton_AnyDown) != 0) controller_.handle(Action::Down);
     if (request) start_share(std::move(*request));
 }
 
