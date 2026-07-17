@@ -651,8 +651,10 @@ private:
             }
             text(drawer, clipped(chats[index].title, 44), 23, kInk,
                  kPickerRowX + 16, row_y + 11);
-            text_right(drawer, chats[index].type, 16, kMuted,
-                       kPickerRowX + kPickerRowWidth - 16, row_y + 17);
+            if (chats[index].type != "configured") {
+                text_right(drawer, chats[index].type, 16, kMuted,
+                           kPickerRowX + kPickerRowWidth - 16, row_y + 17);
+            }
         }
         const std::int32_t third = kPickerWidth / 3;
         drawer->RenderRectangleFill(kDialogRule, kPickerX + third,
