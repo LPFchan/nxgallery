@@ -1,5 +1,6 @@
 #include <nxgallery/gallery_app.hpp>
 #include <nxgallery/horizon_album.hpp>
+#include <nxgallery/video_player.hpp>
 
 #include <algorithm>
 #include <array>
@@ -63,8 +64,12 @@ std::string clipped(std::string value, std::size_t maximum) {
 
 class GalleryApplication::GalleryElement final : public pu::ui::elm::Element {
 public:
-    GalleryElement(GalleryController &controller, std::string &status)
-        : controller_(controller), status_(status) {}
+    GalleryElement(GalleryController &controller, std::string &status,
+                   VideoPlayer &video_player,
+                   std::atomic<std::uint64_t> &transfer_current,
+                   std::atomic<std::uint64_t> &transfer_total)
+        : controller_(controller), status_(status), video_player_(video_player),
+          transfer_current_(transfer_current), transfer_total_(transfer_total) {}
 
     ~GalleryElement() override { clear_textures(); }
 
@@ -137,6 +142,27 @@ private:
         return image_slots_.back().texture;
     }
 
+    pu::sdl2::Texture thumbnail(const MediaItem &media) {
+        std::string resolved_path;
+        std::string error;
+        if (!materialize_thumbnail_path(media, resolved_path, error)) {
+            status_ = std::move(error);
+            return nullptr;
+        }
+        auto found = std::find_if(image_slots_.begin(), image_slots_.end(),
+                                  [&resolved_path](const ImageSlot &slot) {
+                                      return slot.path == resolved_path;
+                                  });
+        if (found != image_slots_.end()) return found->texture;
+        if (image_slots_.size() >= 16) {
+            pu::ui::render::DeleteTexture(image_slots_.front().texture);
+            image_slots_.erase(image_slots_.begin());
+        }
+        image_slots_.push_back(
+            {resolved_path, pu::ui::render::LoadImageFromFile(resolved_path)});
+        return image_slots_.back().texture;
+    }
+
     void fitted_image(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture texture,
                       std::int32_t x, std::int32_t y, std::int32_t width,
                       std::int32_t height) {
@@ -185,11 +211,10 @@ private:
             const std::int32_t x = 44 + column * 303;
             const std::int32_t y = 88 + row * 184;
             drawer->RenderRectangleFill(kDark, x, y, cell_width, cell_height);
-            if (media[index].kind == MediaKind::Photo) fitted_image(drawer, image(media[index].path), x, y, cell_width, cell_height);
-            else text(drawer, "VIDEO", 24, kWhite, x + 92, y + 66);
+            fitted_image(drawer, thumbnail(media[index]), x, y, cell_width, cell_height);
             if (index == controller_.selected_media_index()) render_outline(drawer, kAccent, x - 5, y - 5, cell_width + 10, cell_height + 10, 5);
         }
-        footer(drawer, "A  View                                      +  Exit");
+        footer(drawer, "A  View                                      +  hbmenu");
     }
 
     void render_viewer(pu::ui::render::Renderer::Ref &drawer) {
@@ -203,12 +228,18 @@ private:
             const MediaItem &selected = media[controller_.selected_media_index()];
             if (selected.kind == MediaKind::Photo) fitted_image(drawer, image(selected.path), 80, 90, 1120, 520);
             else {
-                text(drawer, "VIDEO", 48, kWhite, 550, 270);
-                text(drawer, "Playback is not implemented in this slice", 22, kMuted, 425, 335);
+                pu::sdl2::Texture frame = video_player_.texture();
+                fitted_image(drawer, frame != nullptr ? frame : thumbnail(selected),
+                             80, 90, 1120, 520);
             }
             text(drawer, clipped(selected.filename, 58), 18, kWhite, 34, 634);
         }
-        footer(drawer, "B  Back          X  Share          ◀/▶  Previous/Next          +  Exit", kDark, kWhite);
+        const bool video_selected = !media.empty() &&
+            media[controller_.selected_media_index()].kind == MediaKind::Video;
+        footer(drawer, video_selected
+            ? "A  Play/Pause    B  Back    X  Share    ◀/▶  Previous/Next    +  hbmenu"
+            : "B  Back          X  Share          ◀/▶  Previous/Next          +  hbmenu",
+            kDark, kWhite);
     }
 
     void render_chat_picker(pu::ui::render::Renderer::Ref &drawer) {
@@ -247,9 +278,21 @@ private:
 
     void render_sending(pu::ui::render::Renderer::Ref &drawer) {
         drawer->RenderRectangleFill({0, 0, 0, 170}, 0, 0, kWidth, kHeight);
-        drawer->RenderRectangleFill(kPanel, 390, 250, 500, 190);
-        text(drawer, "Sending to Telegram...", 29, kInk, 470, 315);
-        text(drawer, "Keep NX Gallery open", 19, kMuted, 535, 365);
+        drawer->RenderRectangleFill(kPanel, 390, 230, 500, 250);
+        text(drawer, "Sending to Telegram...", 29, kInk, 470, 278);
+        const std::uint64_t current = transfer_current_.load();
+        const std::uint64_t total = transfer_total_.load();
+        const std::uint64_t percent = total > 0
+            ? std::min<std::uint64_t>(100, current * 100 / total) : 0;
+        drawer->RenderRoundedRectangle({220, 220, 224, 255}, 440, 350, 400, 24, 12);
+        if (percent > 0) {
+            drawer->RenderRoundedRectangle(kAccent, 440, 350,
+                                           static_cast<std::int32_t>(percent * 4),
+                                           24, 12);
+        }
+        text(drawer, total > 0 ? std::to_string(percent) + "%" : "Preparing upload...",
+             19, kMuted, total > 0 ? 615 : 555, 390);
+        text(drawer, "Keep NX Gallery open", 18, kMuted, 540, 433);
     }
 
     void render_result(pu::ui::render::Renderer::Ref &drawer) {
@@ -264,6 +307,9 @@ private:
 
     GalleryController &controller_;
     std::string &status_;
+    VideoPlayer &video_player_;
+    std::atomic<std::uint64_t> &transfer_current_;
+    std::atomic<std::uint64_t> &transfer_total_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
     std::size_t text_slot_{};
@@ -282,21 +328,37 @@ GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
 
 GalleryApplication::~GalleryApplication() {
     if (share_worker_.joinable()) share_worker_.join();
+    if (chat_refresh_worker_.joinable()) chat_refresh_worker_.join();
 }
 
 void GalleryApplication::OnLoad() {
+    video_player_ = std::make_unique<VideoPlayer>(pu::ui::render::GetMainRenderer());
     layout_ = pu::ui::Layout::New();
     layout_->SetBackgroundColor(kBackground);
-    element_ = std::make_shared<GalleryElement>(controller_, status_);
+    element_ = std::make_shared<GalleryElement>(controller_, status_, *video_player_,
+                                                transfer_current_, transfer_total_);
     layout_->Add(element_);
     LoadLayout(layout_);
     SetOnInput([this](const u64 down, const u64, const u64, const pu::ui::TouchPoint touch) {
         on_input(down, touch);
     });
     AddRenderCallback([this] {
+        if (video_player_) {
+            video_player_->update_texture();
+            if (video_player_->active() || video_player_->status() == "Playback finished") {
+                status_ = video_player_->status();
+            }
+        }
         poll_share_worker();
+        poll_chat_refresh();
         advance_automation();
     });
+    if (bot_) {
+        std::vector<TelegramChat> cached;
+        bot_->cached_chats(cached);
+        controller_.set_chats(std::move(cached));
+        start_chat_refresh();
+    }
 }
 
 void GalleryApplication::advance_automation() {
@@ -305,9 +367,23 @@ void GalleryApplication::advance_automation() {
     ++automation_frame_;
     if (automation_frame_ == 120 && controller_.screen() == Screen::Grid) {
         controller_.handle(Action::Confirm);
-    } else if (automation_frame_ == 300 && controller_.screen() == Screen::Viewer) {
+    } else if (automation_frame_ == 180 && controller_.screen() == Screen::Viewer &&
+               !controller_.media().empty() &&
+               controller_.media()[controller_.selected_media_index()].kind == MediaKind::Video) {
+        video_player_->play(controller_.media()[controller_.selected_media_index()]);
+    } else if (automation_frame_ == 240 && video_player_->active()) {
+        video_player_->toggle_pause();
+    } else if (automation_frame_ == 250 && video_player_->paused()) {
+        automation_paused_frames_ = video_player_->frames_decoded();
+    } else if (automation_frame_ == 300 && video_player_->paused()) {
+        const bool frozen = video_player_->frames_decoded() == automation_paused_frames_;
+        std::printf("NXGALLERY_AUTOMATION phase=video_pause result=%s frames=%llu\n",
+                    frozen ? "pass" : "fail",
+                    static_cast<unsigned long long>(video_player_->frames_decoded()));
+        video_player_->toggle_pause();
+    } else if (automation_frame_ == 420 && controller_.screen() == Screen::Viewer) {
         open_chat_picker();
-    } else if (automation_frame_ > 300 && !automation_send_started_ &&
+    } else if (automation_frame_ > 420 && !automation_send_started_ &&
                controller_.screen() == Screen::ChatPicker) {
         std::FILE *trigger = std::fopen(kSendTrigger, "rb");
         if (trigger == nullptr) return;
@@ -324,14 +400,8 @@ void GalleryApplication::advance_automation() {
 }
 
 void GalleryApplication::open_chat_picker() {
-    std::vector<TelegramChat> chats;
-    if (bot_) {
-        BotResult result = bot_->refresh_chats(chats);
-        status_ = std::move(result.message);
-    } else {
-        status_ = "Telegram is not configured";
-    }
-    controller_.set_chats(std::move(chats));
+    if (video_player_) video_player_->stop();
+    if (!bot_) status_ = "Telegram is not configured";
     controller_.handle(Action::Share);
 }
 
@@ -340,11 +410,43 @@ void GalleryApplication::start_share(ShareRequest request) {
         controller_.finish_share(false, "Telegram is unavailable");
         return;
     }
+    transfer_current_ = 0;
+    transfer_total_ = 0;
     share_worker_ = std::thread([this, request = std::move(request)]() mutable {
-        BotResult result = bot_->send_media(request.media, request.chat);
+        BotResult result = bot_->send_media(
+            request.media, request.chat,
+            [this](std::uint64_t current, std::uint64_t total) {
+                transfer_current_ = current;
+                transfer_total_ = total;
+            });
         std::lock_guard<std::mutex> lock(share_mutex_);
         share_result_ = std::move(result);
     });
+}
+
+void GalleryApplication::start_chat_refresh() {
+    if (!bot_ || chat_refresh_worker_.joinable()) return;
+    chat_refresh_worker_ = std::thread([this] {
+        std::vector<TelegramChat> chats;
+        BotResult result = bot_->refresh_chats(chats);
+        std::lock_guard<std::mutex> lock(chat_refresh_mutex_);
+        refreshed_chats_ = std::move(chats);
+        chat_refresh_result_ = std::move(result);
+    });
+}
+
+void GalleryApplication::poll_chat_refresh() {
+    std::optional<BotResult> result;
+    std::vector<TelegramChat> chats;
+    {
+        std::lock_guard<std::mutex> lock(chat_refresh_mutex_);
+        if (!chat_refresh_result_) return;
+        result.swap(chat_refresh_result_);
+        chats.swap(refreshed_chats_);
+    }
+    if (chat_refresh_worker_.joinable()) chat_refresh_worker_.join();
+    controller_.set_chats(std::move(chats));
+    status_ = std::move(result->message);
 }
 
 void GalleryApplication::poll_share_worker() {
@@ -413,15 +515,37 @@ void GalleryApplication::on_input(std::uint64_t down, pu::ui::TouchPoint touch) 
         touch_active_ = true;
         on_touch(touch);
     }
-    if ((down & HidNpadButton_Plus) != 0 && controller_.screen() != Screen::Sending) { Close(); return; }
+    if ((down & HidNpadButton_Plus) != 0 && controller_.screen() != Screen::Sending) {
+        const bool supported = envHasNextLoad();
+        const Result result = supported
+            ? envSetNextLoad("sdmc:/hbmenu.nro", "sdmc:/hbmenu.nro") : 0;
+        std::printf("NXGALLERY_DIAGNOSTIC event=exit target=hbmenu supported=%s rc=0x%08x\n",
+                    supported ? "true" : "false", static_cast<unsigned int>(result));
+        std::fflush(stdout);
+        if (video_player_) video_player_->stop();
+        Close();
+        return;
+    }
     if (controller_.screen() == Screen::Sending) return;
+    if (controller_.screen() == Screen::Viewer &&
+        !controller_.media().empty() &&
+        controller_.media()[controller_.selected_media_index()].kind == MediaKind::Video) {
+        if ((down & HidNpadButton_A) != 0) {
+            if (video_player_->active()) video_player_->toggle_pause();
+            else video_player_->play(controller_.media()[controller_.selected_media_index()]);
+            return;
+        }
+        if ((down & (HidNpadButton_B | HidNpadButton_Left | HidNpadButton_Right)) != 0) {
+            video_player_->stop();
+        }
+    }
     if ((down & HidNpadButton_X) != 0 && controller_.screen() == Screen::Viewer) { open_chat_picker(); return; }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::ChatPicker) {
-        std::vector<TelegramChat> chats;
-        if (bot_) {
-            BotResult result = bot_->refresh_chats(chats);
-            status_ = std::move(result.message);
-            controller_.set_chats(std::move(chats));
+        if (!bot_) status_ = "Telegram is not configured";
+        else if (chat_refresh_worker_.joinable()) status_ = "Chat refresh already running";
+        else {
+            status_ = "Refreshing chats in background...";
+            start_chat_refresh();
         }
         return;
     }

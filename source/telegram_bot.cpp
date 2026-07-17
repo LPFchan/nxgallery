@@ -23,12 +23,26 @@ constexpr char kStatePath[] = "sdmc:/switch/nxgallery/telegram-state.json";
 constexpr std::size_t kMaximumResponseBytes = 1024U * 1024U;
 constexpr std::size_t kMaximumStateBytes = 256U * 1024U;
 constexpr std::size_t kMaximumChats = 128;
+constexpr std::size_t kMaximumMetadataRefreshes = 16;
 constexpr std::uint64_t kMaximumPhotoBytes = 10U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumVideoBytes = 50U * 1024U * 1024U;
 
 using JsonOwner = std::unique_ptr<json_object, decltype(&json_object_put)>;
 
 struct ResponseBody { std::string bytes; bool overflow{}; };
+
+int report_transfer(void *context, curl_off_t, curl_off_t,
+                    curl_off_t upload_total, curl_off_t upload_current) {
+    auto *progress = static_cast<TelegramBot::TransferProgress *>(context);
+    if (progress != nullptr && *progress) {
+        try {
+            (*progress)(upload_current > 0 ? static_cast<std::uint64_t>(upload_current) : 0U,
+                        upload_total > 0 ? static_cast<std::uint64_t>(upload_total) : 0U);
+        } catch (...) {
+        }
+    }
+    return 0;
+}
 
 std::size_t append_response(char *data, std::size_t size, std::size_t count, void *context) {
     ResponseBody &body = *static_cast<ResponseBody *>(context);
@@ -221,7 +235,16 @@ bool save_state(std::int64_t offset, const std::vector<TelegramChat> &chats) {
 }  // namespace
 
 TelegramBot::TelegramBot(TelegramConfig config) : config_(std::move(config)), cached_chats_(config_.chats) {
-    (void)read_state(next_update_offset_, cached_chats_);
+    const bool state_loaded = read_state(next_update_offset_, cached_chats_);
+    std::vector<TelegramChat> deduplicated;
+    for (const auto &chat : cached_chats_) merge_chat(deduplicated, chat);
+    cached_chats_ = std::move(deduplicated);
+    std::printf("NXGALLERY_DIAGNOSTIC event=chat_cache configured=%zu cached=%zu state_loaded=%s\n",
+                config_.chats.size(), cached_chats_.size(), state_loaded ? "true" : "false");
+}
+
+void TelegramBot::cached_chats(std::vector<TelegramChat> &chats) const {
+    chats = cached_chats_;
 }
 
 BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept {
@@ -233,6 +256,25 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
         if (!config_.discover_chats) {
             chats = cached_chats_;
             return {true, "Configured chats loaded"};
+        }
+        std::size_t metadata_refreshed = 0;
+        const std::size_t metadata_limit = std::min(cached_chats_.size(), kMaximumMetadataRefreshes);
+        for (std::size_t index = 0; index < metadata_limit; ++index) {
+            std::string bytes;
+            std::string metadata_error;
+            if (!perform_form(config_, "getChat",
+                              "chat_id=" + std::to_string(cached_chats_[index].id),
+                              bytes, metadata_error)) {
+                continue;
+            }
+            JsonOwner metadata_root(nullptr, json_object_put);
+            json_object *metadata_result = nullptr;
+            TelegramChat refreshed;
+            if (api_result(bytes, metadata_root, metadata_result, metadata_error) &&
+                parse_chat(metadata_result, refreshed)) {
+                merge_chat(cached_chats_, std::move(refreshed));
+                ++metadata_refreshed;
+            }
         }
         CURL *encoder = curl_easy_init();
         if (encoder == nullptr) { chats = cached_chats_; return {!chats.empty(), "Could not prepare chat discovery"}; }
@@ -270,6 +312,8 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
             if (parse_chat(chat_object, chat)) merge_chat(cached_chats_, std::move(chat));
         }
         chats = cached_chats_;
+        std::printf("NXGALLERY_DIAGNOSTIC event=chat_refresh updates=%zu metadata=%zu destinations=%zu\n",
+                    count, metadata_refreshed, chats.size());
         if (!save_state(next_update_offset_, cached_chats_)) {
             return {!chats.empty(), chats.empty()
                 ? "Could not save discovered chats"
@@ -282,7 +326,8 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
     }
 }
 
-BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &chat) noexcept {
+BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &chat,
+                                  TransferProgress progress) noexcept {
     try {
         std::string media_path;
         std::string materialize_error;
@@ -308,7 +353,24 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         part = curl_mime_addpart(mime);
         curl_mime_name(part, media.kind == MediaKind::Photo ? "photo" : "video");
         curl_mime_filedata(part, media_path.c_str());
+        if (media.kind == MediaKind::Video) {
+            curl_mime_type(part, "video/mp4");
+            part = curl_mime_addpart(mime);
+            curl_mime_name(part, "width");
+            curl_mime_data(part, "1280", CURL_ZERO_TERMINATED);
+            part = curl_mime_addpart(mime);
+            curl_mime_name(part, "height");
+            curl_mime_data(part, "720", CURL_ZERO_TERMINATED);
+            part = curl_mime_addpart(mime);
+            curl_mime_name(part, "supports_streaming");
+            curl_mime_data(part, "true", CURL_ZERO_TERMINATED);
+        }
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+        if (progress) {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, report_transfer);
+            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+        }
         const CURLcode code = curl_easy_perform(curl);
         long response_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
@@ -325,6 +387,19 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         }
         if (response_code < 200 || response_code >= 300) {
             return {false, "Telegram HTTPS returned status " + std::to_string(response_code)};
+        }
+        if (media.kind == MediaKind::Video && result != nullptr) {
+            json_object *video_object = nullptr;
+            json_object *width_object = nullptr;
+            json_object *height_object = nullptr;
+            if (json_object_object_get_ex(result, "video", &video_object) &&
+                video_object != nullptr &&
+                json_object_object_get_ex(video_object, "width", &width_object) &&
+                json_object_object_get_ex(video_object, "height", &height_object)) {
+                std::printf("NXGALLERY_DIAGNOSTIC event=telegram_video width=%d height=%d\n",
+                            json_object_get_int(width_object),
+                            json_object_get_int(height_object));
+            }
         }
         return {true, "Sent to " + chat.title};
     } catch (...) {

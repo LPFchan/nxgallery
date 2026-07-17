@@ -4,6 +4,7 @@
 #include <nxgallery/telegram_config.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,10 +17,14 @@ struct BotResult {
 
 class TelegramBot {
 public:
+    using TransferProgress = std::function<void(std::uint64_t, std::uint64_t)>;
+
     explicit TelegramBot(TelegramConfig config);
 
+    void cached_chats(std::vector<TelegramChat> &chats) const;
     BotResult refresh_chats(std::vector<TelegramChat> &chats) noexcept;
-    BotResult send_media(const MediaItem &media, const TelegramChat &chat) noexcept;
+    BotResult send_media(const MediaItem &media, const TelegramChat &chat,
+                         TransferProgress progress = {}) noexcept;
 
 private:
     TelegramConfig config_;

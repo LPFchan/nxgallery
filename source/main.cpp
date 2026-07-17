@@ -4,6 +4,7 @@
 #include <nxgallery/horizon_album.hpp>
 #include <nxgallery/https_trust.hpp>
 #include <nxgallery/telegram_config.hpp>
+#include <nxgallery/video_player.hpp>
 
 #include <curl/curl.h>
 #include <openssl/crypto.h>
@@ -18,11 +19,13 @@
 #include <algorithm>
 #include <array>
 #include <arpa/inet.h>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <memory>
 #include <netinet/in.h>
 #include <string>
+#include <thread>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -37,6 +40,7 @@ constexpr char kRawAlbumPath[] = "sdmc:/Nintendo/Album";
 
 struct ProbeOptions {
     bool enabled{};
+    bool send_media{};
     std::string config_url;
     std::string config_pin_hex;
 };
@@ -47,6 +51,7 @@ ProbeOptions parse_probe_options(int argc, char **argv) {
         if (argv[index] == nullptr) continue;
         const std::string argument(argv[index]);
         if (argument == "--probe") options.enabled = true;
+        else if (argument == "--probe-send-media") options.send_media = true;
         else if (argument.rfind("--probe-config-url=", 0) == 0) {
             options.config_url = argument.substr(19);
         } else if (argument.rfind("--probe-config-pin-hex=", 0) == 0) {
@@ -221,7 +226,7 @@ void probe_horizon_album() {
 }
 
 int run_probe(const nxgallery::AlbumScanResult &album, nxgallery::TelegramBot *bot,
-              const std::string &telegram_status) {
+              const std::string &telegram_status, bool send_media) {
     std::printf("NXGALLERY_PROBE_BEGIN version=1\n");
     probe_horizon_album();
     if (!album) {
@@ -248,11 +253,41 @@ int run_probe(const nxgallery::AlbumScanResult &album, nxgallery::TelegramBot *b
                "photos=" + std::to_string(photo_count) +
                ",videos=" + std::to_string(video_count) +
                (album.truncated ? ",truncated=true" : ",truncated=false"));
+    bool playback_ready = false;
+    if (video != nullptr) {
+        nxgallery::VideoPlayer player(nullptr);
+        player.play(*video);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (player.frames_decoded() < 3 && player.active() &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        const std::uint64_t before_pause = player.frames_decoded();
+        if (before_pause >= 3 && player.active()) {
+            player.toggle_pause();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const std::uint64_t paused_frames = player.frames_decoded();
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            const std::uint64_t during_pause = player.frames_decoded();
+            player.toggle_pause();
+            const auto resume_deadline = std::chrono::steady_clock::now() +
+                std::chrono::seconds(3);
+            while (player.frames_decoded() <= during_pause && player.active() &&
+                   std::chrono::steady_clock::now() < resume_deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            playback_ready = during_pause == paused_frames &&
+                player.frames_decoded() > during_pause;
+        }
+        player.stop();
+    }
+    probe_line("video_playback", playback_ready,
+               "pause_resume=" + std::string(playback_ready ? "pass" : "fail"));
     if (bot == nullptr) {
         probe_line("telegram_init", false,
                    telegram_status.empty() ? "Telegram unavailable" : telegram_status);
-        std::printf("NXGALLERY_PROBE_RESULT result=fail sd=%s network=fail photo=skip video=skip\n",
-                    sd_ready ? "pass" : "fail");
+        std::printf("NXGALLERY_PROBE_RESULT result=fail sd=%s playback=%s network=fail photo=skip video=skip\n",
+                    sd_ready ? "pass" : "fail", playback_ready ? "pass" : "fail");
         return 3;
     }
 
@@ -265,6 +300,15 @@ int run_probe(const nxgallery::AlbumScanResult &album, nxgallery::TelegramBot *b
                "destinations=" + std::to_string(chats.size()) +
                ",api_result=" + (refresh.success ? "pass" : "fail") +
                ",message=" + refresh.message);
+
+    const bool chats_ready = !chats.empty() && refresh.success;
+    if (!send_media) {
+        const bool passed = sd_ready && playback_ready && chats_ready;
+        std::printf("NXGALLERY_PROBE_RESULT result=%s sd=%s playback=%s chats=%s photo=skip video=skip\n",
+                    passed ? "pass" : "fail", sd_ready ? "pass" : "fail",
+                    playback_ready ? "pass" : "fail", chats_ready ? "pass" : "fail");
+        return passed ? 0 : 3;
+    }
 
     bool photo_sent = false;
     bool video_sent = false;
@@ -295,9 +339,10 @@ int run_probe(const nxgallery::AlbumScanResult &album, nxgallery::TelegramBot *b
     }
 
     const bool network_ready = photo_sent || video_sent;
-    const bool passed = sd_ready && network_ready && photo_sent && video_sent;
-    std::printf("NXGALLERY_PROBE_RESULT result=%s sd=%s network=%s photo=%s video=%s\n",
+    const bool passed = sd_ready && playback_ready && network_ready && photo_sent && video_sent;
+    std::printf("NXGALLERY_PROBE_RESULT result=%s sd=%s playback=%s network=%s photo=%s video=%s\n",
                 passed ? "pass" : "fail", sd_ready ? "pass" : "fail",
+                playback_ready ? "pass" : "fail",
                 network_ready ? "pass" : "fail", photo_sent ? "pass" : "fail",
                 video_sent ? "pass" : "fail");
     return passed ? 0 : 3;
@@ -337,7 +382,7 @@ int main(int argc, char **argv) {
             telegram_status = nxgallery::https_trust_diagnostic(trust);
         } else {
             auto config = nxgallery::load_telegram_config(kTelegramConfigPath);
-            if (!config && probe_mode) {
+            if (!probe.config_url.empty()) {
                 std::string probe_contents;
                 std::string probe_error;
                 if (fetch_probe_config(probe, probe_contents, probe_error)) {
@@ -347,18 +392,33 @@ int main(int argc, char **argv) {
                     config.error = std::move(probe_error);
                 }
             }
-            if (config) bot = std::make_unique<nxgallery::TelegramBot>(std::move(*config.config));
-            else telegram_status = config.error;
+            if (config) {
+                std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config source=%s configured_chats=%zu discover=%s\n",
+                            probe.config_url.empty() ? "sd" : "injected",
+                            config.config->chats.size(),
+                            config.config->discover_chats ? "true" : "false");
+                bot = std::make_unique<nxgallery::TelegramBot>(std::move(*config.config));
+            } else {
+                telegram_status = config.error;
+                std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config source=%s result=fail line=%zu\n",
+                            probe.config_url.empty() ? "sd" : "injected", config.line);
+            }
         }
     }
 
-    nxgallery::AlbumScanResult album = nxgallery::scan_horizon_album();
+    nxgallery::AlbumScanResult album;
+#ifdef NXGALLERY_AUTOMATION_BUILD
+    album = nxgallery::scan_album(kRawAlbumPath);
+#else
+    album = nxgallery::scan_horizon_album();
+#endif
     if (!probe_mode && (!album || album.items.empty())) {
         nxgallery::AlbumScanResult raw_album = nxgallery::scan_album(kRawAlbumPath);
         if (raw_album && !raw_album.items.empty()) album = std::move(raw_album);
     }
     if (probe_mode) {
-        const int result = run_probe(album, bot.get(), telegram_status);
+        const int result = run_probe(album, bot.get(), telegram_status,
+                                     probe.send_media);
         std::printf("NXGALLERY_DIAGNOSTIC event=probe_exit logical_code=%d process_code=0\n", result);
         std::fflush(stdout);
         std::fflush(stderr);

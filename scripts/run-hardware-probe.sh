@@ -11,6 +11,8 @@ repo_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 nro=${2:-$repo_root/artifacts/nxgallery.nro}
 probe_config=${PROBE_CONFIG:-$repo_root/.secrets/telegram-bot.conf}
 probe_port=${PROBE_CONFIG_PORT:-28772}
+run_mode=${NXGALLERY_RUN_MODE:-probe}
+send_media=${NXGALLERY_PROBE_SEND_MEDIA:-0}
 nxlink_bin=${NXLINK_BIN:-}
 if [ -z "$nxlink_bin" ]; then
     nxlink_bin=$(command -v nxlink || true)
@@ -22,6 +24,14 @@ fi
 [ -x "$nxlink_bin" ] || { echo "nxlink not found; set NXLINK_BIN" >&2; exit 1; }
 [ -s "$nro" ] || { echo "NRO not found: $nro" >&2; exit 1; }
 [ -s "$probe_config" ] || { echo "probe config not found; set PROBE_CONFIG" >&2; exit 1; }
+case "$run_mode" in
+    probe|interactive) ;;
+    *) echo "NXGALLERY_RUN_MODE must be probe or interactive" >&2; exit 2 ;;
+esac
+case "$send_media" in
+    0|1) ;;
+    *) echo "NXGALLERY_PROBE_SEND_MEDIA must be 0 or 1" >&2; exit 2 ;;
+esac
 
 if command -v ipconfig >/dev/null 2>&1 && command -v route >/dev/null 2>&1; then
     interface=$(route -n get "$switch_ip" | awk '/interface:/{print $2; exit}')
@@ -53,23 +63,39 @@ python3 "$repo_root/scripts/probe-config-server.py" \
     --key "$probe_tls/key.pem" --port "$probe_port" &
 server_pid=$!
 
-probe_args="--probe --probe-config-url=https://$host_ip:$probe_port/config --probe-config-pin-hex=$pin_hex"
+launch_args="--probe-config-url=https://$host_ip:$probe_port/config --probe-config-pin-hex=$pin_hex"
+if [ "$run_mode" = probe ]; then launch_args="--probe $launch_args"; fi
+if [ "$run_mode" = probe ] && [ "$send_media" = 1 ]; then
+    launch_args="--probe-send-media $launch_args"
+fi
 
 status=0
-probe_log="$probe_tls/probe.log"
+probe_log=${PROBE_LOG:-$repo_root/artifacts/hardware-probe-last.log}
+mkdir -p "$(dirname "$probe_log")"
+: > "$probe_log"
+chmod 600 "$probe_log"
 probe_pipe="$probe_tls/nxlink.pipe"
 mkfifo "$probe_pipe"
 tee "$probe_log" < "$probe_pipe" &
 tee_pid=$!
 "$nxlink_bin" --address "$switch_ip" --retries 5 --server \
-    --args "$probe_args" "$nro" > "$probe_pipe" 2>&1 || status=$?
+    --args "$launch_args" "$nro" > "$probe_pipe" 2>&1 || status=$?
 wait "$tee_pid" || status=1
 tee_pid=
-if ! grep -Fqx \
-    'NXGALLERY_PROBE_RESULT result=pass sd=pass network=pass photo=pass video=pass' \
-    "$probe_log"; then
-    echo "hardware probe did not complete every required phase" >&2
+if ! grep -Fq 'NXGALLERY_DIAGNOSTIC event=startup' "$probe_log"; then
+    echo 'nxlink did not receive an NX Gallery startup diagnostic; verify hbmenu NetLoader is active' | tee -a "$probe_log" >&2
     status=1
+fi
+if [ "$run_mode" = probe ]; then
+    if [ "$send_media" = 1 ]; then
+        expected='NXGALLERY_PROBE_RESULT result=pass sd=pass playback=pass network=pass photo=pass video=pass'
+    else
+        expected='NXGALLERY_PROBE_RESULT result=pass sd=pass playback=pass chats=pass photo=skip video=skip'
+    fi
+    if ! grep -Fqx "$expected" "$probe_log"; then
+        echo "hardware probe did not complete every required phase" >&2
+        status=1
+    fi
 fi
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true

@@ -4,14 +4,14 @@
 
 - Last updated: 2026-07-17
 - Overall posture: `active`
-- Current focus: physical Switch UX refinement after backend delivery validation
+- Current focus: physical Switch validation of playback controls, cached chat UX, transfer progress, and hbmenu return
 - Highest-priority blocker: none for SD enumeration, networking, or Telegram photo/video delivery
-- Next operator decision needed: decide whether video playback belongs in the next slice
+- Next operator decision needed: whether user-account TDLib login is acceptable for exhaustive Telegram chat enumeration
 - Related decisions: DEC-20260717-001
 
 ## Current state
 
-The repo-template v1.1.4 operating model is installed. The portable album, navigation, and configuration core passes host tests. Production and emulator-automation Plutonium/libnx builds link successfully on `yeowoolmac`. Telegram upload is asynchronous and the runtime configuration is kept outside Git.
+The repo-template v1.1.4 operating model is installed. The portable album, navigation, and configuration core passes host tests. Production and emulator-automation Plutonium/libnx builds link successfully on `yeowoolmac`. Telegram upload is asynchronous, reports libcurl transfer progress in the share sheet, and keeps runtime configuration outside Git. Chat destinations load from memory immediately while a single launch-time Bot API refresh updates the cache in the background.
 
 Ryujinx 1.3.3 now passes the photo-delivery pre-hardware gate: the production NRO
 loads its embedded ASET/NACP, renders two virtual-SD fixtures at about 60 FPS,
@@ -43,6 +43,14 @@ videos from 107 SD plus one NAND Album Accessor entry, authenticated its ephemer
 credential channel, resolved two saved destinations, and delivered one real
 photo plus one real MP4 through Telegram. The harness treats any missing phase
 as a nonzero failure and the operator independently observed both deliveries.
+Telegram confirmed the uploaded MP4 as 1280x720 and the operator confirmed its
+16:9 aspect ratio. Album Accessor video thumbnails and FFmpeg-backed video-only
+playback are built. A non-sending hardware probe isolated playback startup to
+FFmpeg interpreting `sdmc:` as an unsupported URL protocol; the player now uses
+the file protocol explicitly, the Album Accessor materializer honors short
+reads, and a fresh cache generation prevents reuse of older malformed files.
+That correction is built but awaits the next hbmenu NetLoader window for its
+one-shot pause/resume verification.
 
 ## Active tracks
 
@@ -55,6 +63,6 @@ as a nonzero failure and the operator independently observed both deliveries.
 
 ### Product completeness
 
-- Status: `not started`
-- Goal: decide whether playback, delete/edit actions, and richer thumbnail generation belong in the next slice.
+- Status: `playback and transfer UX implemented; hardware validation pending`
+- Goal: validate playback pause/resume, transfer progress, cached chat opening, and hbmenu return; audio remains a separate playback gap.
 - Dependency: successful physical-device share validation.

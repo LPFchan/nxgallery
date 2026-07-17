@@ -20,6 +20,7 @@ DATA        := payload/switch/nxgallery/openssl
 INCLUDES    := include $(PLUTONIUM_PREFIX)/include
 SWITCH_CURL_PREFIX ?= $(PORTLIBS)
 SWITCH_OPENSSL_PREFIX ?= $(PORTLIBS)
+PLAYBACK_PREFIX ?=
 APP_TITLE   := NX Gallery
 APP_AUTHOR  := LPFchan
 APP_VERSION := 0.1.0
@@ -38,8 +39,15 @@ LIBS     := -lpu -lSDL2_ttf -Wl,--start-group -lharfbuzz -lfreetype -Wl,--end-gr
             -lbz2 -lSDL2_image -lpng16 -lz -ljpeg -lwebp -lSDL2_gfx -lSDL2 \
             -lEGL -lglapi -ldrm_nouveau -lcurl -ljson-c -lssl -lcrypto \
             -lm -lstdc++ -lnx -lpthread
+ifneq ($(strip $(PLAYBACK_PREFIX)),)
+LIBS     := -lavformat -lnfs -lsmb2 -lssh2 -lavcodec -lswscale -lswresample -lavutil \
+            -lmbedtls -lmbedx509 -lmbedcrypto $(LIBS)
+endif
 LIBDIRS  := $(PLUTONIUM_PREFIX) $(PORTLIBS) $(LIBNX)
 LIBDIRS  += $(SWITCH_CURL_PREFIX) $(SWITCH_OPENSSL_PREFIX)
+ifneq ($(strip $(PLAYBACK_PREFIX)),)
+LIBDIRS  += $(PLAYBACK_PREFIX)
+endif
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT   := $(CURDIR)/$(TARGET)

@@ -12,9 +12,9 @@
 
 ### Near term
 
-- Exercise the interactive gallery and share-sheet flow on hardware, then refine only behavior supported by captured diagnostics.
+- Run one non-sending nxlink probe to gate the corrected MP4 file I/O and pause/resume automatically, then exercise the cached picker, transfer progress, and explicit hbmenu return with captured diagnostics. Media-delivery probes remain explicit one-shot operations only.
 
 ### Deferred
 
-- MP4 playback and thumbnail extraction, pending proof that sharing is reliable.
-- TDLib integration, pending an explicit requirement for user-account chat/history access.
+- Audio decoding/output for MP4 playback.
+- User-account TDLib integration, pending explicit acceptance of personal-account authentication; bot-authorized TDLib remains update-only.
