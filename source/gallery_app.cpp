@@ -131,6 +131,11 @@ std::string playback_time(std::uint64_t milliseconds) {
         (remainder < 10 ? "0" : "") + std::to_string(remainder);
 }
 
+pu::ui::Color with_opacity(pu::ui::Color color, double opacity) {
+    color.a = static_cast<std::uint8_t>(color.a * std::clamp(opacity, 0.0, 1.0));
+    return color;
+}
+
 }  // namespace
 
 class GalleryApplication::GalleryElement final : public pu::ui::elm::Element {
@@ -174,7 +179,14 @@ public:
         advance_transition();
         switch (controller_.screen()) {
             case Screen::Grid: render_grid(drawer); break;
-            case Screen::Viewer: render_viewer(drawer); break;
+            case Screen::Viewer:
+                render_viewer(drawer);
+                if (transition_from_ == Screen::ChatPicker && transition_t_ < 1.0) {
+                    render_chat_picker(drawer, 1.0 - transition_linear_t_,
+                                       static_cast<std::int32_t>(
+                                           transition_t_ * kDialogRiseHeight));
+                }
+                break;
             case Screen::ChatPicker: render_viewer(drawer); render_chat_picker(drawer); break;
             case Screen::Sending: render_viewer(drawer); render_sending(drawer); break;
             case Screen::Result: render_viewer(drawer); render_result(drawer); break;
@@ -338,7 +350,11 @@ private:
               std::int32_t size, pu::ui::Color color, std::int32_t x,
               std::int32_t y) {
         pu::sdl2::Texture texture = text_texture(value, size, color);
-        if (texture != nullptr) drawer->RenderTexture(texture, x, y);
+        if (texture != nullptr) {
+            drawer->RenderTexture(texture, x, y,
+                                  pu::ui::render::TextureRenderOptions(
+                                      render_alpha_, {}, {}, {}, {}, {}));
+        }
     }
 
     void text_right(pu::ui::render::Renderer::Ref &drawer, const std::string &value,
@@ -346,7 +362,10 @@ private:
                     std::int32_t y) {
         pu::sdl2::Texture texture = text_texture(value, size, color);
         if (texture == nullptr) return;
-        drawer->RenderTexture(texture, right_x - pu::ui::render::GetTextureWidth(texture), y);
+        drawer->RenderTexture(texture,
+                              right_x - pu::ui::render::GetTextureWidth(texture), y,
+                              pu::ui::render::TextureRenderOptions(
+                                  render_alpha_, {}, {}, {}, {}, {}));
     }
 
     void text_center(pu::ui::render::Renderer::Ref &drawer, const std::string &value,
@@ -354,7 +373,10 @@ private:
                      std::int32_t y) {
         pu::sdl2::Texture texture = text_texture(value, size, color);
         if (texture == nullptr) return;
-        drawer->RenderTexture(texture, center_x - pu::ui::render::GetTextureWidth(texture) / 2, y);
+        drawer->RenderTexture(texture,
+                              center_x - pu::ui::render::GetTextureWidth(texture) / 2, y,
+                              pu::ui::render::TextureRenderOptions(
+                                  render_alpha_, {}, {}, {}, {}, {}));
     }
 
     // Renders hint labels right-aligned, recording a full-bar-height touch zone
@@ -376,7 +398,9 @@ private:
             const pu::sdl2::Texture texture = textures[index];
             if (texture == nullptr) continue;
             const std::int32_t width = pu::ui::render::GetTextureWidth(texture);
-            drawer->RenderTexture(texture, x, text_y);
+            drawer->RenderTexture(texture, x, text_y,
+                                  pu::ui::render::TextureRenderOptions(
+                                      render_alpha_, {}, {}, {}, {}, {}));
             if (items[index].tag) {
                 hint_zones_.push_back({x - 24, zone_y, width + 48, zone_height,
                                        *items[index].tag});
@@ -488,12 +512,16 @@ private:
 
     void dialog_face(pu::ui::render::Renderer::Ref &drawer, std::uint8_t dim_alpha,
                      std::int32_t x, std::int32_t y, std::int32_t width,
-                     std::int32_t height, std::int32_t button_row_y) {
+                     std::int32_t height, std::int32_t button_row_y,
+                     double opacity = 1.0) {
         drawer->RenderRectangleFill(
-            {0, 0, 0, static_cast<std::uint8_t>(dim_alpha * dim_progress())},
+            {0, 0, 0, static_cast<std::uint8_t>(
+                dim_alpha * dim_progress() * opacity)},
             0, 0, kWidth, kHeight);
-        drawer->RenderRoundedRectangleFill(kDialogFace, x, y, width, height, kDialogRadius);
-        drawer->RenderRectangleFill(kDialogRule, x, button_row_y, width, 1);
+        drawer->RenderRoundedRectangleFill(with_opacity(kDialogFace, opacity),
+                                           x, y, width, height, kDialogRadius);
+        drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
+                                    x, button_row_y, width, 1);
     }
 
     void render_grid(pu::ui::render::Renderer::Ref &drawer) {
@@ -647,10 +675,14 @@ private:
         }
     }
 
-    void render_chat_picker(pu::ui::render::Renderer::Ref &drawer) {
-        const std::int32_t rise = dialog_rise();
+    void render_chat_picker(pu::ui::render::Renderer::Ref &drawer,
+                            double opacity = 1.0,
+                            std::optional<std::int32_t> rise_override = std::nullopt) {
+        const std::int32_t rise = rise_override.value_or(dialog_rise());
+        const std::uint8_t previous_render_alpha = render_alpha_;
+        render_alpha_ = static_cast<std::uint8_t>(255.0 * opacity);
         dialog_face(drawer, 140, kPickerX, kPickerY + rise, kPickerWidth,
-                    kPickerHeight, kPickerButtonY + rise);
+                    kPickerHeight, kPickerButtonY + rise, opacity);
         text_center(drawer, "Share to Telegram", 25, kInk, kWidth / 2, 128 + rise);
         if (!status_.empty()) {
             text_center(drawer, clipped(status_, 70), 18, kMuted, kWidth / 2, 166 + rise);
@@ -669,9 +701,10 @@ private:
             const std::int32_t row_y = kPickerRowY + rise +
                 static_cast<std::int32_t>(row) * kPickerRowStride;
             if (index == selected) {
-                drawer->RenderRoundedRectangleFill(kRowFace, kPickerRowX, row_y,
+                drawer->RenderRoundedRectangleFill(with_opacity(kRowFace, opacity),
+                                                   kPickerRowX, row_y,
                                                    kPickerRowWidth, kPickerRowHeight, 6);
-                const pu::ui::Color pulse = pulse_color();
+                const pu::ui::Color pulse = with_opacity(pulse_color(), opacity);
                 for (std::int32_t inset = 0; inset < 3; ++inset) {
                     drawer->RenderRoundedRectangle(pulse, kPickerRowX - inset,
                                                    row_y - inset,
@@ -679,7 +712,8 @@ private:
                                                    kPickerRowHeight + 2 * inset, 6);
                 }
             } else if (row + 1 < kPickerVisibleRows && index + 1 < chats.size()) {
-                drawer->RenderRectangleFill({215, 215, 218, 255}, kPickerRowX,
+                drawer->RenderRectangleFill(with_opacity({215, 215, 218, 255}, opacity),
+                                            kPickerRowX,
                                             row_y + kPickerRowHeight + 1,
                                             kPickerRowWidth, 1);
             }
@@ -691,9 +725,11 @@ private:
             }
         }
         const std::int32_t third = kPickerWidth / 3;
-        drawer->RenderRectangleFill(kDialogRule, kPickerX + third,
+        drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
+                                    kPickerX + third,
                                     kPickerButtonY + rise, 1, kPickerButtonHeight);
-        drawer->RenderRectangleFill(kDialogRule, kPickerX + 2 * third,
+        drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
+                                    kPickerX + 2 * third,
                                     kPickerButtonY + rise, 1, kPickerButtonHeight);
         const std::int32_t label_y = kPickerButtonY + 20 + rise;
         text_center(drawer, " Cancel", 24, kDialogAction,
@@ -702,6 +738,7 @@ private:
                     kPickerX + third + third / 2, label_y);
         text_center(drawer, " Send", 24, kDialogAction,
                     kPickerX + 2 * third + third / 2, label_y);
+        render_alpha_ = previous_render_alpha;
     }
 
     void render_sending(pu::ui::render::Renderer::Ref &drawer) {
@@ -761,6 +798,7 @@ private:
     std::vector<ThumbnailState> thumbnail_states_;
     std::vector<HintZone> hint_zones_;
     std::size_t text_slot_{};
+    std::uint8_t render_alpha_{255};
     std::uint32_t pulse_frame_{};
     Screen shown_screen_{Screen::Grid};
     Screen transition_from_{Screen::Grid};
