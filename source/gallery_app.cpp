@@ -393,9 +393,17 @@ private:
             transition_from_ = shown_screen_;
             shown_screen_ = screen;
             transition_frame_ = 0;
+            photo_navigation_transition_ = false;
         } else if (screen == Screen::Viewer && media_index != shown_media_index_) {
             transition_from_ = Screen::Viewer;
             transition_frame_ = 0;
+            previous_media_index_ = shown_media_index_;
+            navigation_direction_ = media_index > shown_media_index_ ? 1 : -1;
+            const auto &media = controller_.media();
+            photo_navigation_transition_ = previous_media_index_ < media.size() &&
+                media_index < media.size() &&
+                media[previous_media_index_].kind == MediaKind::Photo &&
+                media[media_index].kind == MediaKind::Photo;
         }
         shown_media_index_ = media_index;
         transition_t_ = ease_out_cubic(
@@ -403,14 +411,15 @@ private:
         if (transition_frame_ < kTransitionFrames) ++transition_frame_;
     }
 
-    // Fullscreen dip-through-black for Grid<->Viewer and viewer browsing.
-    // Dialog screens animate inside their own render functions instead.
+    // Fullscreen dip-through-black for Grid<->Viewer. Photo browsing uses a
+    // direct directional crossfade so the viewer chrome never dims or flickers.
     void render_screen_fade(pu::ui::render::Renderer::Ref &drawer) {
         if (transition_t_ >= 1.0) return;
         const bool fades =
             (shown_screen_ == Screen::Grid && transition_from_ == Screen::Viewer) ||
             (shown_screen_ == Screen::Viewer &&
-             (transition_from_ == Screen::Grid || transition_from_ == Screen::Viewer));
+             (transition_from_ == Screen::Grid ||
+              (transition_from_ == Screen::Viewer && !photo_navigation_transition_)));
         if (!fades) return;
         const std::uint8_t alpha =
             static_cast<std::uint8_t>((1.0 - transition_t_) * 255.0);
@@ -462,7 +471,7 @@ private:
 
     void fitted_image(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture texture,
                       std::int32_t x, std::int32_t y, std::int32_t width,
-                      std::int32_t height) {
+                      std::int32_t height, std::uint8_t alpha = 255) {
         if (texture == nullptr) return;
         const std::int32_t source_width = pu::ui::render::GetTextureWidth(texture);
         const std::int32_t source_height = pu::ui::render::GetTextureHeight(texture);
@@ -471,10 +480,12 @@ private:
                                       static_cast<double>(height) / source_height);
         const std::int32_t render_width = static_cast<std::int32_t>(source_width * scale);
         const std::int32_t render_height = static_cast<std::int32_t>(source_height * scale);
+        SDL_SetTextureAlphaMod(texture, alpha);
         drawer->RenderTexture(texture, x + (width - render_width) / 2,
                               y + (height - render_height) / 2,
                               pu::ui::render::TextureRenderOptions({}, render_width,
                                   render_height, {}, {}, {}));
+        SDL_SetTextureAlphaMod(texture, 255);
     }
 
     void dialog_face(pu::ui::render::Renderer::Ref &drawer, std::uint8_t dim_alpha,
@@ -550,13 +561,30 @@ private:
         const bool video_selected = !media.empty() &&
             media[controller_.selected_media_index()].kind == MediaKind::Video;
         if (!media.empty()) {
-            const MediaItem &selected = media[controller_.selected_media_index()];
-            if (selected.kind == MediaKind::Photo) {
+            const std::size_t selected_index = controller_.selected_media_index();
+            const MediaItem &selected = media[selected_index];
+            if (photo_navigation_transition_ && transition_t_ < 1.0 &&
+                previous_media_index_ < media.size()) {
+                const double linear_t = static_cast<double>(transition_frame_ > 0 ?
+                    transition_frame_ - 1 : 0) / kTransitionFrames;
+                const std::int32_t previous_x = static_cast<std::int32_t>(
+                    -navigation_direction_ * linear_t * kWidth);
+                const std::int32_t selected_x = static_cast<std::int32_t>(
+                    navigation_direction_ * (1.0 - linear_t) * kWidth);
+                const std::uint8_t previous_alpha = static_cast<std::uint8_t>(
+                    (1.0 - linear_t) * 255.0);
+                const std::uint8_t selected_alpha = static_cast<std::uint8_t>(
+                    linear_t * 255.0);
+                fitted_image(drawer, image(media[previous_media_index_].path),
+                             previous_x, 0, kWidth, kHeight, previous_alpha);
+                fitted_image(drawer, image(selected.path), selected_x, 0,
+                             kWidth, kHeight, selected_alpha);
+            } else if (selected.kind == MediaKind::Photo) {
                 fitted_image(drawer, image(selected.path), 0, 0, kWidth, kHeight);
             } else {
                 pu::sdl2::Texture frame = video_player_.texture();
                 fitted_image(drawer, frame != nullptr ? frame :
-                             thumbnail(controller_.selected_media_index()),
+                             thumbnail(selected_index),
                              0, 0, kWidth, kHeight);
             }
         }
@@ -731,8 +759,11 @@ private:
     Screen shown_screen_{Screen::Grid};
     Screen transition_from_{Screen::Grid};
     std::size_t shown_media_index_{};
+    std::size_t previous_media_index_{};
+    std::int32_t navigation_direction_{1};
     std::uint32_t transition_frame_{kTransitionFrames};
     double transition_t_{1.0};
+    bool photo_navigation_transition_{};
 };
 
 GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
