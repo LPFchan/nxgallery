@@ -405,8 +405,9 @@ private:
                 media_index < media.size();
         }
         shown_media_index_ = media_index;
-        transition_t_ = ease_out_cubic(
-            static_cast<double>(transition_frame_) / kTransitionFrames);
+        transition_linear_t_ =
+            static_cast<double>(transition_frame_) / kTransitionFrames;
+        transition_t_ = ease_out_cubic(transition_linear_t_);
         if (transition_frame_ < kTransitionFrames) ++transition_frame_;
     }
 
@@ -479,18 +480,10 @@ private:
                                       static_cast<double>(height) / source_height);
         const std::int32_t render_width = static_cast<std::int32_t>(source_width * scale);
         const std::int32_t render_height = static_cast<std::int32_t>(source_height * scale);
-        SDL_BlendMode previous_blend_mode = SDL_BLENDMODE_NONE;
-        Uint8 previous_alpha = 255;
-        SDL_GetTextureBlendMode(texture, &previous_blend_mode);
-        SDL_GetTextureAlphaMod(texture, &previous_alpha);
-        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-        SDL_SetTextureAlphaMod(texture, alpha);
         drawer->RenderTexture(texture, x + (width - render_width) / 2,
                               y + (height - render_height) / 2,
-                              pu::ui::render::TextureRenderOptions({}, render_width,
+                              pu::ui::render::TextureRenderOptions(alpha, render_width,
                                   render_height, {}, {}, {}));
-        SDL_SetTextureAlphaMod(texture, previous_alpha);
-        SDL_SetTextureBlendMode(texture, previous_blend_mode);
     }
 
     void dialog_face(pu::ui::render::Renderer::Ref &drawer, std::uint8_t dim_alpha,
@@ -570,16 +563,17 @@ private:
             const MediaItem &selected = media[selected_index];
             if (viewer_navigation_transition_ && transition_t_ < 1.0 &&
                 previous_media_index_ < media.size()) {
-                const double progress = transition_t_;
+                const double motion_progress = transition_t_;
+                const double opacity_progress = transition_linear_t_;
                 const std::int32_t previous_x = static_cast<std::int32_t>(
-                    -navigation_direction_ * progress * kViewerNavigationOffset);
+                    -navigation_direction_ * motion_progress * kViewerNavigationOffset);
                 const std::int32_t selected_x = static_cast<std::int32_t>(
-                    navigation_direction_ * (1.0 - progress) *
+                    navigation_direction_ * (1.0 - motion_progress) *
                     kViewerNavigationOffset);
                 const std::uint8_t previous_alpha = static_cast<std::uint8_t>(
-                    (1.0 - progress) * 255.0);
+                    (1.0 - opacity_progress) * 255.0);
                 const std::uint8_t selected_alpha = static_cast<std::uint8_t>(
-                    progress * 255.0);
+                    opacity_progress * 255.0);
                 const pu::sdl2::Texture previous_texture =
                     media[previous_media_index_].kind == MediaKind::Photo ?
                     image(media[previous_media_index_].path) :
@@ -774,6 +768,7 @@ private:
     std::size_t previous_media_index_{};
     std::int32_t navigation_direction_{1};
     std::uint32_t transition_frame_{kTransitionFrames};
+    double transition_linear_t_{1.0};
     double transition_t_{1.0};
     bool viewer_navigation_transition_{};
 };
