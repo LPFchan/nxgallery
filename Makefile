@@ -40,8 +40,7 @@ LIBS     := -lpu -lSDL2_ttf -Wl,--start-group -lharfbuzz -lfreetype -Wl,--end-gr
             -lEGL -lglapi -ldrm_nouveau -lcurl -ljson-c -lssl -lcrypto \
             -lm -lstdc++ -lnx -lpthread
 ifneq ($(strip $(PLAYBACK_PREFIX)),)
-LIBS     := -lavformat -lnfs -lsmb2 -lssh2 -lavcodec -lswscale -lswresample -lavutil \
-            -lmbedtls -lmbedx509 -lmbedcrypto $(LIBS)
+LIBS     := -lavformat -lavcodec -lswscale -lavutil $(LIBS)
 endif
 LIBDIRS  := $(PLUTONIUM_PREFIX) $(PORTLIBS) $(LIBNX)
 LIBDIRS  += $(SWITCH_CURL_PREFIX) $(SWITCH_OPENSSL_PREFIX)

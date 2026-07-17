@@ -8,7 +8,7 @@ NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled
 - Stock-inspired grid, viewer, modal chat picker, sending state, and result dialog.
 - Controller and touchscreen targets for captures, Back, Share, chat rows, Send, and Cancel.
 - One asynchronous Telegram Bot API refresh at launch, plus configured and persisted destinations; opening Share reads the in-memory cache immediately.
-- `sendPhoto` and `sendVideo` multipart uploads on a worker thread with visible transfer progress.
+- `sendPhoto` and `sendVideo` multipart uploads on a worker thread with colored transfer progress and B-button cancellation.
 - Bot tokens remain SD-card configuration and are never compiled or packaged.
 - Video captures use Album Accessor JPEG thumbnails. FFmpeg-backed in-app video playback and pause/resume are implemented; audio output remains outside this prototype slice.
 
@@ -17,8 +17,9 @@ NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled
 | Surface | Controls |
 | --- | --- |
 | Grid | D-pad selects, A opens, + returns to hbmenu |
-| Viewer | Left/right changes capture, A plays/pauses video, X opens Telegram share, B returns |
+| Viewer | Left/right changes capture, A plays/pauses video, X opens Telegram share, B returns; videos show elapsed and total playback progress |
 | Chat picker | Up/down selects, A sends, Y refreshes chats, B cancels |
+| Sending | B aborts the active Telegram transfer |
 
 The same surfaces are touch-enabled: tap a capture, then use the visible Back,
 Share, chat-row, Send, and Cancel targets.

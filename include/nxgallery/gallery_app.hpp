@@ -53,6 +53,7 @@ private:
     std::vector<TelegramChat> refreshed_chats_;
     std::atomic<std::uint64_t> transfer_current_{};
     std::atomic<std::uint64_t> transfer_total_{};
+    std::atomic<bool> transfer_cancel_requested_{};
     bool touch_active_{};
     std::uint32_t automation_frame_{};
     bool automation_send_started_{};

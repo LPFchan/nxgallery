@@ -60,6 +60,14 @@ std::string clipped(std::string value, std::size_t maximum) {
     return value + "...";
 }
 
+std::string playback_time(std::uint64_t milliseconds) {
+    const std::uint64_t seconds = milliseconds / 1000U;
+    const std::uint64_t minutes = seconds / 60U;
+    const std::uint64_t remainder = seconds % 60U;
+    return std::to_string(minutes) + ":" +
+        (remainder < 10 ? "0" : "") + std::to_string(remainder);
+}
+
 }  // namespace
 
 class GalleryApplication::GalleryElement final : public pu::ui::elm::Element {
@@ -67,9 +75,11 @@ public:
     GalleryElement(GalleryController &controller, std::string &status,
                    VideoPlayer &video_player,
                    std::atomic<std::uint64_t> &transfer_current,
-                   std::atomic<std::uint64_t> &transfer_total)
+                   std::atomic<std::uint64_t> &transfer_total,
+                   std::atomic<bool> &transfer_cancel_requested)
         : controller_(controller), status_(status), video_player_(video_player),
-          transfer_current_(transfer_current), transfer_total_(transfer_total) {}
+          transfer_current_(transfer_current), transfer_total_(transfer_total),
+          transfer_cancel_requested_(transfer_cancel_requested) {}
 
     ~GalleryElement() override { clear_textures(); }
 
@@ -231,8 +241,30 @@ private:
                 pu::sdl2::Texture frame = video_player_.texture();
                 fitted_image(drawer, frame != nullptr ? frame : thumbnail(selected),
                              80, 90, 1120, 520);
+                const std::uint64_t position = video_player_.position_ms();
+                const std::uint64_t duration = video_player_.duration_ms();
+                constexpr std::int32_t timeline_x = 180;
+                constexpr std::int32_t timeline_y = 596;
+                constexpr std::int32_t timeline_width = 900;
+                drawer->RenderRoundedRectangle({78, 82, 90, 255}, timeline_x,
+                                               timeline_y, timeline_width, 10, 5);
+                if (duration > 0 && position > 0) {
+                    const std::int32_t fill_width = std::max<std::int32_t>(
+                        6, static_cast<std::int32_t>(
+                            std::min<std::uint64_t>(duration, position) * timeline_width /
+                            duration));
+                    drawer->RenderRoundedRectangle(kAccent, timeline_x, timeline_y,
+                                                   fill_width, 10,
+                                                   std::min<std::int32_t>(5, fill_width / 2));
+                }
+                text(drawer, playback_time(position) + " / " + playback_time(duration),
+                     16, kWhite, 1090, 588);
+                const std::string playback_status = video_player_.status();
+                if (!playback_status.empty()) {
+                    text(drawer, clipped(playback_status, 72), 17, kWhite, 180, 614);
+                }
             }
-            text(drawer, clipped(selected.filename, 58), 18, kWhite, 34, 634);
+            text(drawer, clipped(selected.filename, 58), 18, kWhite, 34, 642);
         }
         const bool video_selected = !media.empty() &&
             media[controller_.selected_media_index()].kind == MediaKind::Video;
@@ -279,20 +311,25 @@ private:
     void render_sending(pu::ui::render::Renderer::Ref &drawer) {
         drawer->RenderRectangleFill({0, 0, 0, 170}, 0, 0, kWidth, kHeight);
         drawer->RenderRectangleFill(kPanel, 390, 230, 500, 250);
-        text(drawer, "Sending to Telegram...", 29, kInk, 470, 278);
+        const bool cancelling = transfer_cancel_requested_.load();
+        text(drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
+             29, kInk, cancelling ? 486 : 470, 278);
         const std::uint64_t current = transfer_current_.load();
         const std::uint64_t total = transfer_total_.load();
         const std::uint64_t percent = total > 0
             ? std::min<std::uint64_t>(100, current * 100 / total) : 0;
-        drawer->RenderRoundedRectangle({220, 220, 224, 255}, 440, 350, 400, 24, 12);
+        drawer->RenderRoundedRectangle({176, 226, 234, 255}, 440, 350, 400, 24, 12);
         if (percent > 0) {
+            const std::int32_t fill_width = std::max<std::int32_t>(
+                8, static_cast<std::int32_t>(percent * 4));
             drawer->RenderRoundedRectangle(kAccent, 440, 350,
-                                           static_cast<std::int32_t>(percent * 4),
-                                           24, 12);
+                                           fill_width, 24,
+                                           std::min<std::int32_t>(12, fill_width / 2));
         }
         text(drawer, total > 0 ? std::to_string(percent) + "%" : "Preparing upload...",
              19, kMuted, total > 0 ? 615 : 555, 390);
-        text(drawer, "Keep NX Gallery open", 18, kMuted, 540, 433);
+        text(drawer, cancelling ? "Waiting for Telegram to stop" : "B  Cancel transfer",
+             18, kMuted, cancelling ? 520 : 555, 433);
     }
 
     void render_result(pu::ui::render::Renderer::Ref &drawer) {
@@ -310,6 +347,7 @@ private:
     VideoPlayer &video_player_;
     std::atomic<std::uint64_t> &transfer_current_;
     std::atomic<std::uint64_t> &transfer_total_;
+    std::atomic<bool> &transfer_cancel_requested_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
     std::size_t text_slot_{};
@@ -336,7 +374,8 @@ void GalleryApplication::OnLoad() {
     layout_ = pu::ui::Layout::New();
     layout_->SetBackgroundColor(kBackground);
     element_ = std::make_shared<GalleryElement>(controller_, status_, *video_player_,
-                                                transfer_current_, transfer_total_);
+                                                transfer_current_, transfer_total_,
+                                                transfer_cancel_requested_);
     layout_->Add(element_);
     LoadLayout(layout_);
     SetOnInput([this](const u64 down, const u64, const u64, const pu::ui::TouchPoint touch) {
@@ -381,7 +420,20 @@ void GalleryApplication::advance_automation() {
                     frozen ? "pass" : "fail",
                     static_cast<unsigned long long>(video_player_->frames_decoded()));
         video_player_->toggle_pause();
-    } else if (automation_frame_ == 420 && controller_.screen() == Screen::Viewer) {
+    } else if ((automation_frame_ == 360 || automation_frame_ == 380 ||
+                automation_frame_ == 400) &&
+               controller_.screen() == Screen::Viewer) {
+        video_player_->stop();
+        controller_.handle(automation_frame_ == 400 ? Action::Right : Action::Left);
+        const auto &media = controller_.media();
+        if (!media.empty() &&
+            media[controller_.selected_media_index()].kind == MediaKind::Video) {
+            video_player_->play(media[controller_.selected_media_index()]);
+        }
+    } else if (automation_frame_ > 420 && controller_.screen() == Screen::Viewer) {
+        std::FILE *trigger = std::fopen(kSendTrigger, "rb");
+        if (trigger == nullptr) return;
+        std::fclose(trigger);
         open_chat_picker();
     } else if (automation_frame_ > 420 && !automation_send_started_ &&
                controller_.screen() == Screen::ChatPicker) {
@@ -411,13 +463,15 @@ void GalleryApplication::start_share(ShareRequest request) {
         return;
     }
     transfer_current_ = 0;
-    transfer_total_ = 0;
+    transfer_total_ = request.media.size;
+    transfer_cancel_requested_ = false;
     share_worker_ = std::thread([this, request = std::move(request)]() mutable {
         BotResult result = bot_->send_media(
             request.media, request.chat,
             [this](std::uint64_t current, std::uint64_t total) {
                 transfer_current_ = current;
-                transfer_total_ = total;
+                if (total > 0) transfer_total_ = total;
+                return !transfer_cancel_requested_.load();
             });
         std::lock_guard<std::mutex> lock(share_mutex_);
         share_result_ = std::move(result);
@@ -526,7 +580,13 @@ void GalleryApplication::on_input(std::uint64_t down, pu::ui::TouchPoint touch) 
         Close();
         return;
     }
-    if (controller_.screen() == Screen::Sending) return;
+    if (controller_.screen() == Screen::Sending) {
+        if ((down & HidNpadButton_B) != 0) {
+            transfer_cancel_requested_ = true;
+            status_ = "Cancelling Telegram transfer...";
+        }
+        return;
+    }
     if (controller_.screen() == Screen::Viewer &&
         !controller_.media().empty() &&
         controller_.media()[controller_.selected_media_index()].kind == MediaKind::Video) {

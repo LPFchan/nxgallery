@@ -27,6 +27,8 @@ public:
     bool active() const noexcept;
     bool paused() const noexcept;
     std::uint64_t frames_decoded() const noexcept;
+    std::uint64_t position_ms() const noexcept;
+    std::uint64_t duration_ms() const noexcept;
     std::string status() const;
 
 private:

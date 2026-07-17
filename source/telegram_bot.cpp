@@ -36,9 +36,12 @@ int report_transfer(void *context, curl_off_t, curl_off_t,
     auto *progress = static_cast<TelegramBot::TransferProgress *>(context);
     if (progress != nullptr && *progress) {
         try {
-            (*progress)(upload_current > 0 ? static_cast<std::uint64_t>(upload_current) : 0U,
-                        upload_total > 0 ? static_cast<std::uint64_t>(upload_total) : 0U);
+            return (*progress)(
+                upload_current > 0 ? static_cast<std::uint64_t>(upload_current) : 0U,
+                upload_total > 0 ? static_cast<std::uint64_t>(upload_total) : 0U)
+                ? 0 : 1;
         } catch (...) {
+            return 1;
         }
     }
     return 0;
@@ -376,6 +379,9 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         curl_mime_free(mime);
         curl_easy_cleanup(curl);
+        if (code == CURLE_ABORTED_BY_CALLBACK) {
+            return {false, "Transfer cancelled"};
+        }
         if (code != CURLE_OK || body.overflow) {
             return {false, body.overflow ? "Telegram response exceeded its size limit" :
                 "Telegram upload failed: " + std::string(curl_easy_strerror(code))};

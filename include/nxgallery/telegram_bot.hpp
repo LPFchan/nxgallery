@@ -17,7 +17,7 @@ struct BotResult {
 
 class TelegramBot {
 public:
-    using TransferProgress = std::function<void(std::uint64_t, std::uint64_t)>;
+    using TransferProgress = std::function<bool(std::uint64_t, std::uint64_t)>;
 
     explicit TelegramBot(TelegramConfig config);
 

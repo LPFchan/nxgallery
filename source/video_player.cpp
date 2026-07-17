@@ -6,10 +6,12 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/error.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 }
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -35,6 +37,8 @@ struct VideoPlayer::Impl {
     std::atomic<bool> is_active{};
     std::atomic<bool> is_paused{};
     std::atomic<std::uint64_t> decoded_frames{};
+    std::atomic<std::uint64_t> playback_position_ms{};
+    std::atomic<std::uint64_t> playback_duration_ms{};
     mutable std::mutex mutex;
     std::condition_variable wake;
     std::vector<std::uint8_t> pending_pixels;
@@ -80,10 +84,10 @@ struct VideoPlayer::Impl {
         const int info_result = open_result < 0
             ? open_result : avformat_find_stream_info(format, nullptr);
         if (open_result < 0 || info_result < 0) {
-            set_message("Could not open video capture");
             char ffmpeg_error[AV_ERROR_MAX_STRING_SIZE]{};
             av_strerror(open_result < 0 ? open_result : info_result,
                         ffmpeg_error, sizeof(ffmpeg_error));
+            set_message(std::string("Could not open video: ") + ffmpeg_error);
             std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=open_failed code=%d reason=%s\n",
                         open_result < 0 ? open_result : info_result, ffmpeg_error);
             finish();
@@ -98,6 +102,18 @@ struct VideoPlayer::Impl {
             return;
         }
         AVStream *stream = format->streams[stream_index];
+        std::int64_t duration_ms = 0;
+        if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
+            duration_ms = av_rescale_q(stream->duration, stream->time_base,
+                                       AVRational{1, 1000});
+        } else if (format->duration != AV_NOPTS_VALUE && format->duration > 0) {
+            duration_ms = av_rescale_q(format->duration, AV_TIME_BASE_Q,
+                                       AVRational{1, 1000});
+        }
+        playback_duration_ms = duration_ms > 0
+            ? static_cast<std::uint64_t>(duration_ms) : 0U;
+        const std::int64_t stream_start = stream->start_time != AV_NOPTS_VALUE
+            ? stream->start_time : 0;
         const AVCodec *decoder = avcodec_find_decoder(stream->codecpar->codec_id);
         codec = decoder == nullptr ? nullptr : avcodec_alloc_context3(decoder);
         if (codec == nullptr ||
@@ -122,15 +138,20 @@ struct VideoPlayer::Impl {
         }
 
         set_message(is_paused ? "Paused" : "Playing");
-        AVRational frame_rate = av_guess_frame_rate(format, stream, nullptr);
+        AVRational frame_rate = stream->r_frame_rate;
+        if (frame_rate.num <= 0 || frame_rate.den <= 0) {
+            frame_rate = stream->avg_frame_rate;
+        }
+        if (frame_rate.num <= 0 || frame_rate.den <= 0) {
+            frame_rate = av_guess_frame_rate(format, stream, nullptr);
+        }
         double seconds_per_frame = frame_rate.num > 0 && frame_rate.den > 0
             ? static_cast<double>(frame_rate.den) / frame_rate.num : 1.0 / 30.0;
         if (seconds_per_frame <= 0.0 || seconds_per_frame > 1.0) seconds_per_frame = 1.0 / 30.0;
-        const auto frame_period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(seconds_per_frame));
-        auto next_frame = std::chrono::steady_clock::now();
+        auto playback_origin = std::chrono::steady_clock::now();
+        std::uint64_t last_position_ms = 0;
         decoded_frames = 0;
-        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=%d height=%d fps_milli=%u\n",
+        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=%d height=%d nominal_fps_milli=%u pacing=timestamp\n",
                     codec->width, codec->height,
                     static_cast<unsigned int>(1000.0 / seconds_per_frame));
 
@@ -138,14 +159,35 @@ struct VideoPlayer::Impl {
             if (packet->stream_index == stream_index &&
                 avcodec_send_packet(codec, packet) >= 0) {
                 while (!stop_requested && avcodec_receive_frame(codec, frame) >= 0) {
-                    {
+                    const std::uint64_t frame_number = decoded_frames.load() + 1U;
+                    std::uint64_t frame_position_ms = static_cast<std::uint64_t>(
+                        (frame_number - 1U) * seconds_per_frame * 1000.0);
+                    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+                        const std::int64_t elapsed_ms = av_rescale_q(
+                            std::max<std::int64_t>(0, frame->best_effort_timestamp - stream_start),
+                            stream->time_base, AVRational{1, 1000});
+                        frame_position_ms = static_cast<std::uint64_t>(elapsed_ms);
+                    }
+                    frame_position_ms = std::max(last_position_ms, frame_position_ms);
+                    if (playback_duration_ms > 0) {
+                        frame_position_ms = std::min(frame_position_ms,
+                                                     playback_duration_ms.load());
+                    }
+                    while (!stop_requested) {
                         std::unique_lock<std::mutex> lock(mutex);
-                        const bool was_paused = is_paused;
-                        const auto pause_started = std::chrono::steady_clock::now();
-                        wake.wait(lock, [this] { return stop_requested || !is_paused; });
-                        if (!stop_requested && was_paused) {
-                            next_frame += std::chrono::steady_clock::now() - pause_started;
+                        if (is_paused) {
+                            const auto pause_started = std::chrono::steady_clock::now();
+                            wake.wait(lock, [this] { return stop_requested || !is_paused; });
+                            if (!stop_requested) {
+                                playback_origin += std::chrono::steady_clock::now() - pause_started;
+                            }
+                            continue;
                         }
+                        const auto target = playback_origin +
+                            std::chrono::milliseconds(frame_position_ms);
+                        if (!wake.wait_until(lock, target, [this] {
+                                return stop_requested || is_paused;
+                            })) break;
                     }
                     if (stop_requested) break;
                     const std::size_t stride = static_cast<std::size_t>(codec->width) * 4U;
@@ -162,20 +204,18 @@ struct VideoPlayer::Impl {
                         pending_height = codec->height;
                         pending_frame = true;
                     }
-                    const std::uint64_t frame_number = ++decoded_frames;
+                    decoded_frames = frame_number;
+                    playback_position_ms = frame_position_ms;
+                    last_position_ms = frame_position_ms;
                     if (frame_number == 1) {
                         std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame\n");
                     }
-                    next_frame += frame_period;
-                    std::unique_lock<std::mutex> lock(mutex);
-                    wake.wait_until(lock, next_frame, [this] {
-                        return stop_requested || is_paused;
-                    });
                 }
             }
             av_packet_unref(packet);
         }
         if (!stop_requested) {
+            if (playback_duration_ms > 0) playback_position_ms = playback_duration_ms.load();
             set_message("Playback finished");
             std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=finished frames=%llu\n",
                         static_cast<unsigned long long>(decoded_frames.load()));
@@ -190,7 +230,6 @@ VideoPlayer::VideoPlayer(SDL_Renderer *renderer) : impl_(std::make_unique<Impl>(
 
 VideoPlayer::~VideoPlayer() {
     stop();
-    if (impl_->texture != nullptr) SDL_DestroyTexture(impl_->texture);
 }
 
 void VideoPlayer::play(const MediaItem &media) {
@@ -219,6 +258,18 @@ void VideoPlayer::stop() {
     if (impl_->worker.joinable()) impl_->worker.join();
     impl_->is_active = false;
     impl_->stop_requested = false;
+    impl_->decoded_frames = 0;
+    impl_->playback_position_ms = 0;
+    impl_->playback_duration_ms = 0;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->pending_pixels.clear();
+    impl_->pending_width = 0;
+    impl_->pending_height = 0;
+    impl_->pending_frame = false;
+    if (impl_->texture != nullptr) SDL_DestroyTexture(impl_->texture);
+    impl_->texture = nullptr;
+    impl_->texture_width = 0;
+    impl_->texture_height = 0;
 }
 
 void VideoPlayer::update_texture() {
@@ -245,6 +296,12 @@ bool VideoPlayer::active() const noexcept { return impl_->is_active; }
 bool VideoPlayer::paused() const noexcept { return impl_->is_paused; }
 std::uint64_t VideoPlayer::frames_decoded() const noexcept {
     return impl_->decoded_frames.load();
+}
+std::uint64_t VideoPlayer::position_ms() const noexcept {
+    return impl_->playback_position_ms.load();
+}
+std::uint64_t VideoPlayer::duration_ms() const noexcept {
+    return impl_->playback_duration_ms.load();
 }
 
 std::string VideoPlayer::status() const {
