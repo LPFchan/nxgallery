@@ -45,6 +45,11 @@ constexpr std::int32_t kCellWidth = 294;
 constexpr std::int32_t kCellHeight = 165;
 constexpr std::int32_t kCellStrideX = 302;
 constexpr std::int32_t kCellStrideY = 173;
+constexpr std::size_t kThumbnailPageSize =
+    GalleryController::kGridColumns * GalleryController::kVisibleRows;
+constexpr std::size_t kThumbnailCachePages = 4;
+constexpr std::size_t kMaximumThumbnailTextures =
+    kThumbnailPageSize * kThumbnailCachePages;
 
 // Viewer overlay bars and touch chips.
 constexpr std::int32_t kViewerBarHeight = 64;
@@ -136,7 +141,10 @@ public:
                    std::atomic<bool> &transfer_cancel_requested)
         : controller_(controller), status_(status), video_player_(video_player),
           transfer_current_(transfer_current), transfer_total_(transfer_total),
-          transfer_cancel_requested_(transfer_cancel_requested) {}
+          transfer_cancel_requested_(transfer_cancel_requested) {
+        thumbnail_states_.resize(controller_.media().size(), ThumbnailState::Unloaded);
+        preload_initial_thumbnail_window();
+    }
 
     ~GalleryElement() override { clear_textures(); }
 
@@ -158,6 +166,7 @@ public:
     }
 
     void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32, const s32) override {
+        update_thumbnail_cache();
         text_slot_ = 0;
         hint_zones_.clear();
         ++pulse_frame_;
@@ -179,6 +188,11 @@ public:
 private:
     struct TextSlot { std::string key; pu::sdl2::Texture texture{nullptr}; };
     struct ImageSlot { std::string path; pu::sdl2::Texture texture{nullptr}; };
+    enum class ThumbnailState : std::uint8_t { Unloaded, Cached, Failed };
+    struct ThumbnailSlot {
+        std::size_t media_index{};
+        pu::sdl2::Texture texture{nullptr};
+    };
     struct HintZone {
         std::int32_t x;
         std::int32_t y;
@@ -195,8 +209,111 @@ private:
     void clear_textures() {
         for (auto &slot : text_slots_) pu::ui::render::DeleteTexture(slot.texture);
         for (auto &slot : image_slots_) pu::ui::render::DeleteTexture(slot.texture);
+        for (auto &slot : thumbnail_slots_) {
+            pu::ui::render::DeleteTexture(slot.texture);
+        }
         text_slots_.clear();
         image_slots_.clear();
+        thumbnail_slots_.clear();
+        thumbnail_states_.clear();
+    }
+
+    bool load_thumbnail(std::size_t media_index) {
+        const auto &media = controller_.media();
+        if (media_index >= media.size() ||
+            thumbnail_states_[media_index] != ThumbnailState::Unloaded) {
+            return false;
+        }
+
+        std::string resolved_path;
+        std::string error;
+        pu::sdl2::Texture texture = nullptr;
+        if (materialize_thumbnail_path(media[media_index], resolved_path, error)) {
+            texture = pu::ui::render::LoadImageFromFile(resolved_path);
+            if (texture == nullptr) error = "Could not decode capture thumbnail";
+        }
+        if (texture == nullptr) {
+            thumbnail_states_[media_index] = ThumbnailState::Failed;
+            if (status_.empty()) {
+                status_ = error.empty() ? "Some capture thumbnails could not be loaded" :
+                                          std::move(error);
+            }
+            return true;
+        }
+
+        thumbnail_slots_.push_back({media_index, texture});
+        thumbnail_states_[media_index] = ThumbnailState::Cached;
+        return true;
+    }
+
+    void preload_initial_thumbnail_window() {
+        const std::size_t preload_count =
+            std::min(controller_.media().size(), kMaximumThumbnailTextures);
+        thumbnail_slots_.reserve(preload_count);
+        for (std::size_t index = 0; index < preload_count; ++index) {
+            load_thumbnail(index);
+        }
+        const std::size_t failed = static_cast<std::size_t>(std::count(
+            thumbnail_states_.begin(), thumbnail_states_.end(), ThumbnailState::Failed));
+        std::printf("NXGALLERY_DIAGNOSTIC event=thumbnail_preload "
+                    "state=initial loaded=%zu failed=%zu capacity=%zu\n",
+                    thumbnail_slots_.size(), failed, kMaximumThumbnailTextures);
+    }
+
+    void update_thumbnail_cache() {
+        const auto &media = controller_.media();
+        if (media.empty()) return;
+
+        const std::size_t page_count =
+            (media.size() + kThumbnailPageSize - 1) / kThumbnailPageSize;
+        const std::size_t current_page =
+            controller_.grid_page_start() / kThumbnailPageSize;
+        const std::size_t maximum_first_page =
+            page_count > kThumbnailCachePages ? page_count - kThumbnailCachePages : 0;
+        const std::size_t preferred_first_page =
+            current_page > 0 ? current_page - 1 : 0;
+        const std::size_t first_page =
+            std::min(preferred_first_page, maximum_first_page);
+        const std::size_t first_index = first_page * kThumbnailPageSize;
+        const std::size_t end_index =
+            std::min(media.size(), first_index + kMaximumThumbnailTextures);
+
+        auto slot = thumbnail_slots_.begin();
+        while (slot != thumbnail_slots_.end()) {
+            if (slot->media_index < first_index || slot->media_index >= end_index) {
+                pu::ui::render::DeleteTexture(slot->texture);
+                thumbnail_states_[slot->media_index] = ThumbnailState::Unloaded;
+                slot = thumbnail_slots_.erase(slot);
+            } else {
+                ++slot;
+            }
+        }
+
+        const std::size_t visible_start = controller_.grid_page_start();
+        const std::size_t visible_end =
+            std::min(media.size(), visible_start + kThumbnailPageSize);
+        auto load_first_missing = [this](std::size_t start, std::size_t end) {
+            for (std::size_t index = start; index < end; ++index) {
+                if (thumbnail_states_[index] == ThumbnailState::Unloaded) {
+                    load_thumbnail(index);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // One decode per frame spreads refill work across navigation frames.
+        if (load_first_missing(visible_start, visible_end)) return;
+        if (load_first_missing(visible_end, end_index)) return;
+        load_first_missing(first_index, visible_start);
+    }
+
+    pu::sdl2::Texture thumbnail(std::size_t media_index) const {
+        auto found = std::find_if(thumbnail_slots_.begin(), thumbnail_slots_.end(),
+                                  [media_index](const ThumbnailSlot &slot) {
+                                      return slot.media_index == media_index;
+                                  });
+        return found == thumbnail_slots_.end() ? nullptr : found->texture;
     }
 
     pu::sdl2::Texture text_texture(const std::string &value, std::int32_t size,
@@ -343,27 +460,6 @@ private:
         return image_slots_.back().texture;
     }
 
-    pu::sdl2::Texture thumbnail(const MediaItem &media) {
-        std::string resolved_path;
-        std::string error;
-        if (!materialize_thumbnail_path(media, resolved_path, error)) {
-            status_ = std::move(error);
-            return nullptr;
-        }
-        auto found = std::find_if(image_slots_.begin(), image_slots_.end(),
-                                  [&resolved_path](const ImageSlot &slot) {
-                                      return slot.path == resolved_path;
-                                  });
-        if (found != image_slots_.end()) return found->texture;
-        if (image_slots_.size() >= 16) {
-            pu::ui::render::DeleteTexture(image_slots_.front().texture);
-            image_slots_.erase(image_slots_.begin());
-        }
-        image_slots_.push_back(
-            {resolved_path, pu::ui::render::LoadImageFromFile(resolved_path)});
-        return image_slots_.back().texture;
-    }
-
     void fitted_image(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture texture,
                       std::int32_t x, std::int32_t y, std::int32_t width,
                       std::int32_t height) {
@@ -419,7 +515,7 @@ private:
             const std::int32_t x = kGridX + column * kCellStrideX;
             const std::int32_t y = kGridY + row * kCellStrideY;
             drawer->RenderRectangleFill(kBlack, x, y, kCellWidth, kCellHeight);
-            fitted_image(drawer, thumbnail(media[index]), x, y, kCellWidth, kCellHeight);
+            fitted_image(drawer, thumbnail(index), x, y, kCellWidth, kCellHeight);
             if (media[index].kind == MediaKind::Video) {
                 drawer->RenderRoundedRectangleFill({0, 0, 0, 170}, x + kCellWidth - 58,
                                                    y + kCellHeight - 32, 50, 24, 4);
@@ -459,7 +555,8 @@ private:
                 fitted_image(drawer, image(selected.path), 0, 0, kWidth, kHeight);
             } else {
                 pu::sdl2::Texture frame = video_player_.texture();
-                fitted_image(drawer, frame != nullptr ? frame : thumbnail(selected),
+                fitted_image(drawer, frame != nullptr ? frame :
+                             thumbnail(controller_.selected_media_index()),
                              0, 0, kWidth, kHeight);
             }
         }
@@ -624,6 +721,8 @@ private:
     std::atomic<bool> &transfer_cancel_requested_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
+    std::vector<ThumbnailSlot> thumbnail_slots_;
+    std::vector<ThumbnailState> thumbnail_states_;
     std::vector<HintZone> hint_zones_;
     std::size_t text_slot_{};
     std::uint32_t pulse_frame_{};
