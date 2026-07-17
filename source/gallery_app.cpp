@@ -94,6 +94,7 @@ constexpr std::int32_t kSwipeThreshold = 60;
 // dip through black; dialogs rise this many pixels while their dim fades in.
 constexpr std::uint32_t kTransitionFrames = 12;
 constexpr std::int32_t kDialogRiseHeight = 26;
+constexpr std::int32_t kViewerNavigationOffset = kWidth / 5;
 
 double ease_out_cubic(double t) {
     const double inverse = 1.0 - t;
@@ -393,17 +394,15 @@ private:
             transition_from_ = shown_screen_;
             shown_screen_ = screen;
             transition_frame_ = 0;
-            photo_navigation_transition_ = false;
+            viewer_navigation_transition_ = false;
         } else if (screen == Screen::Viewer && media_index != shown_media_index_) {
             transition_from_ = Screen::Viewer;
             transition_frame_ = 0;
             previous_media_index_ = shown_media_index_;
             navigation_direction_ = media_index > shown_media_index_ ? 1 : -1;
             const auto &media = controller_.media();
-            photo_navigation_transition_ = previous_media_index_ < media.size() &&
-                media_index < media.size() &&
-                media[previous_media_index_].kind == MediaKind::Photo &&
-                media[media_index].kind == MediaKind::Photo;
+            viewer_navigation_transition_ = previous_media_index_ < media.size() &&
+                media_index < media.size();
         }
         shown_media_index_ = media_index;
         transition_t_ = ease_out_cubic(
@@ -411,7 +410,7 @@ private:
         if (transition_frame_ < kTransitionFrames) ++transition_frame_;
     }
 
-    // Fullscreen dip-through-black for Grid<->Viewer. Photo browsing uses a
+    // Fullscreen dip-through-black for Grid<->Viewer. Capture browsing uses a
     // direct directional crossfade so the viewer chrome never dims or flickers.
     void render_screen_fade(pu::ui::render::Renderer::Ref &drawer) {
         if (transition_t_ >= 1.0) return;
@@ -419,7 +418,7 @@ private:
             (shown_screen_ == Screen::Grid && transition_from_ == Screen::Viewer) ||
             (shown_screen_ == Screen::Viewer &&
              (transition_from_ == Screen::Grid ||
-              (transition_from_ == Screen::Viewer && !photo_navigation_transition_)));
+              (transition_from_ == Screen::Viewer && !viewer_navigation_transition_)));
         if (!fades) return;
         const std::uint8_t alpha =
             static_cast<std::uint8_t>((1.0 - transition_t_) * 255.0);
@@ -480,12 +479,18 @@ private:
                                       static_cast<double>(height) / source_height);
         const std::int32_t render_width = static_cast<std::int32_t>(source_width * scale);
         const std::int32_t render_height = static_cast<std::int32_t>(source_height * scale);
+        SDL_BlendMode previous_blend_mode = SDL_BLENDMODE_NONE;
+        Uint8 previous_alpha = 255;
+        SDL_GetTextureBlendMode(texture, &previous_blend_mode);
+        SDL_GetTextureAlphaMod(texture, &previous_alpha);
+        SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
         SDL_SetTextureAlphaMod(texture, alpha);
         drawer->RenderTexture(texture, x + (width - render_width) / 2,
                               y + (height - render_height) / 2,
                               pu::ui::render::TextureRenderOptions({}, render_width,
                                   render_height, {}, {}, {}));
-        SDL_SetTextureAlphaMod(texture, 255);
+        SDL_SetTextureAlphaMod(texture, previous_alpha);
+        SDL_SetTextureBlendMode(texture, previous_blend_mode);
     }
 
     void dialog_face(pu::ui::render::Renderer::Ref &drawer, std::uint8_t dim_alpha,
@@ -563,21 +568,28 @@ private:
         if (!media.empty()) {
             const std::size_t selected_index = controller_.selected_media_index();
             const MediaItem &selected = media[selected_index];
-            if (photo_navigation_transition_ && transition_t_ < 1.0 &&
+            if (viewer_navigation_transition_ && transition_t_ < 1.0 &&
                 previous_media_index_ < media.size()) {
-                const double linear_t = static_cast<double>(transition_frame_ > 0 ?
-                    transition_frame_ - 1 : 0) / kTransitionFrames;
+                const double progress = transition_t_;
                 const std::int32_t previous_x = static_cast<std::int32_t>(
-                    -navigation_direction_ * linear_t * kWidth);
+                    -navigation_direction_ * progress * kViewerNavigationOffset);
                 const std::int32_t selected_x = static_cast<std::int32_t>(
-                    navigation_direction_ * (1.0 - linear_t) * kWidth);
+                    navigation_direction_ * (1.0 - progress) *
+                    kViewerNavigationOffset);
                 const std::uint8_t previous_alpha = static_cast<std::uint8_t>(
-                    (1.0 - linear_t) * 255.0);
+                    (1.0 - progress) * 255.0);
                 const std::uint8_t selected_alpha = static_cast<std::uint8_t>(
-                    linear_t * 255.0);
-                fitted_image(drawer, image(media[previous_media_index_].path),
+                    progress * 255.0);
+                const pu::sdl2::Texture previous_texture =
+                    media[previous_media_index_].kind == MediaKind::Photo ?
+                    image(media[previous_media_index_].path) :
+                    thumbnail(previous_media_index_);
+                const pu::sdl2::Texture selected_texture =
+                    selected.kind == MediaKind::Photo ? image(selected.path) :
+                                                        thumbnail(selected_index);
+                fitted_image(drawer, previous_texture,
                              previous_x, 0, kWidth, kHeight, previous_alpha);
-                fitted_image(drawer, image(selected.path), selected_x, 0,
+                fitted_image(drawer, selected_texture, selected_x, 0,
                              kWidth, kHeight, selected_alpha);
             } else if (selected.kind == MediaKind::Photo) {
                 fitted_image(drawer, image(selected.path), 0, 0, kWidth, kHeight);
@@ -763,7 +775,7 @@ private:
     std::int32_t navigation_direction_{1};
     std::uint32_t transition_frame_{kTransitionFrames};
     double transition_t_{1.0};
-    bool photo_navigation_transition_{};
+    bool viewer_navigation_transition_{};
 };
 
 GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
