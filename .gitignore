@@ -1,6 +1,7 @@
 .DS_Store
 Thumbs.db
 .tmp_commit_msg_*
+.claude/worktrees/
 
 # Local credentials and generated Switch artifacts
 .secrets/
