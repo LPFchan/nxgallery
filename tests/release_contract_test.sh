@@ -22,7 +22,7 @@ grep -q '^discover_chats=true$' "$example"
 ! grep -q '^chat=' "$example"
 grep -Fq 'sdmc:/switch/nxgallery/telegram-state.json' "$repo_root/source/telegram_bot.cpp"
 grep -Fq 'CURLOPT_XFERINFOFUNCTION' "$repo_root/source/telegram_bot.cpp"
-grep -Fq 'APP_VERSION ?= 0.1.0' "$repo_root/Makefile"
+grep -Fq 'APP_VERSION ?= 0.1.1' "$repo_root/Makefile"
 grep -Fq 'HidNpadButton_Minus' "$repo_root/source/gallery_app.cpp"
 grep -Fq '(-) Update' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'https://api.github.com/repos/LPFchan/nxgallery/releases/latest' \
@@ -30,6 +30,7 @@ grep -Fq 'https://api.github.com/repos/LPFchan/nxgallery/releases/latest' \
 grep -Fq 'constexpr char kReleaseAssetName[] = "nxgallery.nro"' \
     "$repo_root/include/nxgallery/release_update.hpp"
 grep -Fq 'actual_digest != release.sha256' "$repo_root/source/release_update.cpp"
+! grep -Fq '"build " __DATE__' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'start_chat_refresh();' "$repo_root/source/gallery_app.cpp"
 ! grep -Fq '(void)save_state' "$repo_root/source/telegram_bot.cpp"
 ! grep -Eq '^bot_token=[0-9]{5,}:[A-Za-z0-9_-]{20,}$' "$example"

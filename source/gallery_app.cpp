@@ -612,11 +612,6 @@ private:
             hint_zones_.push_back({36, kFooterRuleY + 1, 160,
                                    kHeight - kFooterRuleY - 1,
                                    HintTag::Update});
-        } else {
-            text(drawer, "build " __DATE__ " " __TIME__, 16, kMuted, 40, 694);
-            if (!status_.empty()) {
-                text(drawer, clipped(status_, 64), 18, kMuted, 40, 668);
-            }
         }
         std::vector<HintItem> grid_hints;
         if (!telegram_ready_) {
