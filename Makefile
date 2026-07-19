@@ -35,6 +35,9 @@ CXXFLAGS += -fno-rtti
 ifeq ($(NXGALLERY_AUTOMATION_BUILD),1)
 CXXFLAGS += -DNXGALLERY_AUTOMATION_BUILD
 endif
+ifeq ($(NXGALLERY_UPDATE_E2E_BUILD),1)
+CXXFLAGS += -DNXGALLERY_AUTOMATION_BUILD -DNXGALLERY_UPDATE_E2E_BUILD
+endif
 LDFLAGS  := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--gc-sections
 LIBS     := -lpu -lSDL2_ttf -Wl,--start-group -lharfbuzz -lfreetype -Wl,--end-group \
             -lbz2 -lSDL2_image -lpng16 -lz -ljpeg -lwebp -lSDL2_gfx -lSDL2 \

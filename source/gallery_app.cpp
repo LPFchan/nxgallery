@@ -111,10 +111,6 @@ double ease_out_cubic(double t) {
 // the left, instructions on the right.
 constexpr char kTelegramConfigPath[] = "sdmc:/switch/nxgallery/telegram-bot.conf";
 constexpr char kRawAlbumPath[] = "sdmc:/Nintendo/Album";
-#ifdef NXGALLERY_AUTOMATION_BUILD
-constexpr char kAutomationUpdateMarker[] =
-    "sdmc:/switch/nxgallery/automation-update";
-#endif
 constexpr std::uint16_t kSetupPort = 8135;
 constexpr std::int32_t kSetupQrX = 240;
 constexpr std::int32_t kSetupQrY = 176;
@@ -1088,10 +1084,8 @@ void GalleryApplication::OnLoad() {
 }
 
 void GalleryApplication::start_release_check() {
-#ifdef NXGALLERY_AUTOMATION_BUILD
-    struct stat marker {};
-    if (stat(kAutomationUpdateMarker, &marker) != 0 ||
-        !S_ISREG(marker.st_mode)) return;
+#if defined(NXGALLERY_AUTOMATION_BUILD) && !defined(NXGALLERY_UPDATE_E2E_BUILD)
+    return;
 #endif
     if (!release_updates_enabled_ || update_worker_.joinable()) return;
     update_worker_ = std::thread([this] {
@@ -1187,7 +1181,11 @@ void GalleryApplication::poll_album_scan() {
 }
 
 void GalleryApplication::advance_automation() {
-#ifdef NXGALLERY_AUTOMATION_BUILD
+#ifdef NXGALLERY_UPDATE_E2E_BUILD
+    ++automation_frame_;
+    if (automation_frame_ > 1800 && update_available_ &&
+        !update_installing_) start_release_install();
+#elif defined(NXGALLERY_AUTOMATION_BUILD)
     constexpr char kSendTrigger[] = "sdmc:/switch/nxgallery/automation-send";
     ++automation_frame_;
     if (automation_frame_ == 120 && controller_.screen() == Screen::Grid) {

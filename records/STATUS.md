@@ -4,7 +4,7 @@
 
 - Last updated: 2026-07-19
 - Overall posture: `active`
-- Current focus: physical Switch validation of progressive startup, bot onboarding, playback controls, cached chat UX, transfer progress, and the release-update affordance
+- Current focus: physical Switch validation of progressive startup, bot onboarding, playback controls, cached chat UX, and transfer progress
 - Highest-priority blocker: none for SD enumeration, networking, or Telegram photo/video delivery
 - Next operator decision needed: whether user-account TDLib login is acceptable for exhaustive Telegram chat enumeration
 - Related decisions: DEC-20260717-001
@@ -25,6 +25,15 @@ destination. Albums exceeding 5,000 supported files are fully ordered before
 the newest 5,000 are retained. Ryujinx confirms that refresh rewrites the cache
 and that both the discovered private chat and its Korean title survive a cold
 app relaunch.
+
+The self-updater passes an end-to-end Ryujinx 1.3.3 release-chain check. A
+current-code build identified as v0.1.0 discovered the published v0.1.1 release,
+downloaded it with visible byte progress, verified its GitHub digest and NRO
+shape, atomically replaced the launched NRO, and preserved the exact v0.1.0
+bytes as `.previous`. A cold relaunch loaded NX Gallery v0.1.1. Vision review
+also confirms that the bottom-left Minus Update affordance matches the A, X,
+and Plus controller hints and that update installation uses the same dimmed,
+rising progress panel and cyan bar as Telegram sending.
 
 Hardware validation is now self-driving: nxlink `--probe` diagnostics cover SD
 enumeration, destination refresh, photo delivery, and MP4 delivery, ending in a
