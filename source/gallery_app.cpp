@@ -1,5 +1,6 @@
 #include <nxgallery/gallery_app.hpp>
 #include <nxgallery/horizon_album.hpp>
+#include <nxgallery/release_update.hpp>
 #include <nxgallery/video_player.hpp>
 
 #include "qrcodegen.h"
@@ -19,6 +20,10 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifndef NXGALLERY_VERSION
+#define NXGALLERY_VERSION "0.0.0"
+#endif
 
 namespace nxgallery {
 namespace {
@@ -118,7 +123,7 @@ constexpr std::int32_t kSetupQrY = 176;
 constexpr std::int32_t kSetupQrPanel = 320;
 constexpr std::int32_t kSetupTextX = 600;
 
-enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back, Setup };
+enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back, Setup, Update };
 
 void render_outline(pu::ui::render::Renderer::Ref &drawer, pu::ui::Color color,
                     std::int32_t x, std::int32_t y, std::int32_t width,
@@ -163,12 +168,17 @@ public:
                    std::atomic<std::uint64_t> &transfer_total,
                    std::atomic<bool> &transfer_cancel_requested,
                    bool &setup_active, std::string &setup_url,
-                   std::string &setup_notice, bool &telegram_ready)
+                   std::string &setup_notice, bool &telegram_ready,
+                   bool &update_notice_active, std::string &update_notice,
+                   bool &update_available, bool &update_installing)
         : controller_(controller), status_(status), video_player_(video_player),
           transfer_current_(transfer_current), transfer_total_(transfer_total),
           transfer_cancel_requested_(transfer_cancel_requested),
           setup_active_(setup_active), setup_url_(setup_url),
-          setup_notice_(setup_notice), telegram_ready_(telegram_ready) {
+          setup_notice_(setup_notice), telegram_ready_(telegram_ready),
+          update_notice_active_(update_notice_active),
+          update_notice_(update_notice), update_available_(update_available),
+          update_installing_(update_installing) {
         thumbnail_states_.resize(controller_.media().size(), ThumbnailState::Unloaded);
         preload_initial_thumbnail_window();
     }
@@ -213,6 +223,7 @@ public:
             case Screen::Result: render_viewer(drawer); render_result(drawer); break;
         }
         if (setup_active_) render_token_setup(drawer);
+        else if (update_notice_active_) render_update_notice(drawer);
         render_screen_fade(drawer);
         for (std::size_t index = text_slot_; index < text_slots_.size(); ++index) {
             pu::ui::render::DeleteTexture(text_slots_[index].texture);
@@ -596,8 +607,17 @@ private:
             render_outline(drawer, pulse_color(), x - 9, y - 9,
                            kCellWidth + 18, kCellHeight + 18, 6);
         }
-        text(drawer, "build " __DATE__ " " __TIME__, 16, kMuted, 40, 694);
-        if (!status_.empty()) text(drawer, clipped(status_, 64), 18, kMuted, 40, 668);
+        if (update_available_) {
+            text(drawer, "(-) Update", 22, kDialogAction, 60, 663);
+            hint_zones_.push_back({36, kFooterRuleY + 1, 160,
+                                   kHeight - kFooterRuleY - 1,
+                                   HintTag::Update});
+        } else {
+            text(drawer, "build " __DATE__ " " __TIME__, 16, kMuted, 40, 694);
+            if (!status_.empty()) {
+                text(drawer, clipped(status_, 64), 18, kMuted, 40, 668);
+            }
+        }
         std::vector<HintItem> grid_hints;
         if (!telegram_ready_) {
             grid_hints.push_back({" Set up Telegram", HintTag::Setup, 44});
@@ -872,6 +892,20 @@ private:
                     kDialogButtonY + 20 + rise);
     }
 
+    void render_update_notice(pu::ui::render::Renderer::Ref &drawer) {
+        dialog_face(drawer, 170, kDialogX, kDialogY, kDialogWidth,
+                    kDialogHeight, kDialogButtonY);
+        text_center(drawer, update_installing_ ? "Updating NX Gallery"
+                                               : "NX Gallery update",
+                    29, update_installing_ ? kDialogAction : kInk,
+                    kWidth / 2, 252);
+        text_center(drawer, clipped(update_notice_, 62), 20, kInk,
+                    kWidth / 2, 322);
+        text_center(drawer, update_installing_ ? "Please wait" : "OK", 24,
+                    update_installing_ ? kMuted : kDialogAction,
+                    kWidth / 2, kDialogButtonY + 20);
+    }
+
     GalleryController &controller_;
     std::string &status_;
     VideoPlayer &video_player_;
@@ -882,6 +916,10 @@ private:
     std::string &setup_url_;
     std::string &setup_notice_;
     bool &telegram_ready_;
+    bool &update_notice_active_;
+    std::string &update_notice_;
+    bool &update_available_;
+    bool &update_installing_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
     std::vector<ThumbnailSlot> thumbnail_slots_;
@@ -907,9 +945,11 @@ private:
 GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
                                        AlbumScanResult album,
                                        std::unique_ptr<TelegramBot> bot,
-                                       std::string telegram_status)
+                                       std::string telegram_status,
+                                       bool release_updates_enabled)
     : Application(std::move(renderer)), bot_(std::move(bot)),
-      status_(std::move(telegram_status)) {
+      status_(std::move(telegram_status)),
+      release_updates_enabled_(release_updates_enabled) {
     controller_.set_media(std::move(album.items));
     telegram_ready_ = bot_ != nullptr;
     if (!album.error.empty()) status_ = album.error;
@@ -918,8 +958,10 @@ GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
 
 GalleryApplication::~GalleryApplication() {
     if (setup_server_) setup_server_->stop();
+    update_cancel_requested_ = true;
     if (share_worker_.joinable()) share_worker_.join();
     if (chat_refresh_worker_.joinable()) chat_refresh_worker_.join();
+    if (update_worker_.joinable()) update_worker_.join();
 }
 
 void GalleryApplication::OnLoad() {
@@ -930,7 +972,9 @@ void GalleryApplication::OnLoad() {
                                                 transfer_current_, transfer_total_,
                                                 transfer_cancel_requested_,
                                                 setup_active_, setup_url_,
-                                                setup_notice_, telegram_ready_);
+                                                setup_notice_, telegram_ready_,
+                                                update_notice_active_, update_notice_,
+                                                update_available_, update_installing_);
     layout_->Add(element_);
     LoadLayout(layout_);
     SetOnInput([this](const u64 down, const u64, const u64 held, const pu::ui::TouchPoint touch) {
@@ -946,6 +990,7 @@ void GalleryApplication::OnLoad() {
         poll_share_worker();
         poll_chat_refresh();
         poll_token_setup();
+        poll_release_update();
         advance_automation();
     });
     if (bot_) {
@@ -953,6 +998,64 @@ void GalleryApplication::OnLoad() {
         bot_->cached_chats(cached);
         controller_.set_chats(std::move(cached));
         start_chat_refresh();
+    }
+    start_release_check();
+}
+
+void GalleryApplication::start_release_check() {
+#ifdef NXGALLERY_AUTOMATION_BUILD
+    return;
+#else
+    if (!release_updates_enabled_ || update_worker_.joinable()) return;
+    update_worker_ = std::thread([this] {
+        UpdateResult result = check_latest_release(
+            NXGALLERY_VERSION, &update_cancel_requested_);
+        std::lock_guard<std::mutex> lock(update_mutex_);
+        update_result_ = std::move(result);
+    });
+#endif
+}
+
+void GalleryApplication::start_release_install() {
+    if (!available_update_ || update_worker_.joinable() || update_installing_) return;
+    update_installing_ = true;
+    update_notice_ = "Downloading and verifying " + available_update_->version + "...";
+    update_notice_active_ = true;
+    const UpdateResult release = *available_update_;
+    update_worker_ = std::thread([this, release] {
+        UpdateResult result = install_release(
+            release, kInstalledNroPath, &update_cancel_requested_);
+        std::lock_guard<std::mutex> lock(update_mutex_);
+        update_result_ = std::move(result);
+    });
+}
+
+void GalleryApplication::poll_release_update() {
+    std::optional<UpdateResult> result;
+    {
+        std::lock_guard<std::mutex> lock(update_mutex_);
+        result.swap(update_result_);
+    }
+    if (!result) return;
+    if (update_worker_.joinable()) update_worker_.join();
+    const char *outcome = result->outcome == UpdateOutcome::Available ? "available" :
+        result->outcome == UpdateOutcome::Installed ? "installed" :
+        result->outcome == UpdateOutcome::Failed ? "failed" : "current";
+    std::printf("NXGALLERY_DIAGNOSTIC event=release_update outcome=%s version=%s message=%s\n",
+                outcome, result->version.c_str(), result->message.c_str());
+    if (result->outcome == UpdateOutcome::Available) {
+        available_update_ = std::move(*result);
+        update_available_ = true;
+        return;
+    }
+    if (update_installing_) {
+        update_installing_ = false;
+        if (result->outcome == UpdateOutcome::Installed) {
+            update_available_ = false;
+            available_update_.reset();
+        }
+        update_notice_ = std::move(result->message);
+        update_notice_active_ = true;
     }
 }
 
@@ -1136,6 +1239,7 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
             break;
         case HintTag::Share: open_chat_picker(); break;
         case HintTag::Setup: open_token_setup(); break;
+        case HintTag::Update: start_release_install(); break;
         case HintTag::Back:
             if (video_player_) video_player_->stop();
             controller_.handle(Action::Back);
@@ -1145,6 +1249,11 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
 }
 
 void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
+    if (update_notice_active_) {
+        if (update_installing_) return;
+        update_notice_active_ = false;
+        return;
+    }
     if (setup_active_) {
         if (touch.HitsRegion(kPickerX, kPickerButtonY, kPickerWidth,
                              kPickerButtonHeight)) {
@@ -1402,6 +1511,18 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             close_token_setup();
             status_ = "Telegram setup cancelled";
         }
+        return;
+    }
+    if (update_notice_active_) {
+        if (update_installing_) return;
+        if ((down & (HidNpadButton_A | HidNpadButton_B)) != 0) {
+            update_notice_active_ = false;
+        }
+        return;
+    }
+    if ((down & HidNpadButton_Minus) != 0 &&
+        controller_.screen() == Screen::Grid && update_available_) {
+        start_release_install();
         return;
     }
     if ((down & HidNpadButton_Plus) != 0 && controller_.screen() != Screen::Sending) {

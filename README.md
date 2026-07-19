@@ -46,6 +46,22 @@ the picker so Bot API discovery can observe and cache the channel's canonical ID
 
 TDLib with a user-account login is required for account-wide chat enumeration/search or historical access. Bot-authorized TDLib, including the proven NX Torrent Horizon port, remains update-only and cannot reconstruct missing bot chat history.
 
+## Updates
+
+NX Gallery checks the latest stable release from `LPFchan/nxgallery` once at
+startup. The check stays invisible when the installed version is current, when
+no release exists, or when GitHub cannot be reached. A newer release adds
+`(-) Update` to the bottom-left of the grid; press Minus or tap that button to
+download and install it. The app verifies GitHub's SHA-256 asset digest and the
+NRO structure before replacing `/switch/nxgallery/nxgallery.nro`, and keeps the
+previous executable as `nxgallery.nro.previous` for rollback. Restart NX Gallery
+after a successful update.
+
+Published releases must use a stable `vMAJOR.MINOR.PATCH` tag, build with the
+matching `APP_VERSION`, and attach the production executable with the exact
+asset name `nxgallery.nro`. Prereleases and differently named assets are not
+offered in-app.
+
 ## Build
 
 Host policy tests:
@@ -65,7 +81,7 @@ export SWITCH_CURL_PREFIX=/path/to/staged/switch-curl
 export SWITCH_OPENSSL_PREFIX=/path/to/staged/switch-openssl
 export PLAYBACK_PREFIX=/path/to/staged/switch-ffmpeg-portlibs
 export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
-make -j4
+make -j4 APP_VERSION=0.1.0
 ```
 
 For Ryujinx UI verification, `make automation` produces a separate

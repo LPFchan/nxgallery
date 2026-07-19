@@ -364,6 +364,7 @@ int main(int argc, char **argv) {
         std::printf("NXGALLERY_DIAGNOSTIC event=startup probe=%s\n", probe_mode ? "true" : "false");
     }
     bool curl_ready = false;
+    bool release_updates_enabled = false;
     std::string telegram_status;
     if (R_SUCCEEDED(socket_result)) {
         unsigned char seed[64];
@@ -382,6 +383,7 @@ int main(int argc, char **argv) {
         if (trust != nxgallery::HttpsTrustStatus::Available) {
             telegram_status = nxgallery::https_trust_diagnostic(trust);
         } else {
+            release_updates_enabled = true;
             auto config = nxgallery::load_telegram_config(kTelegramConfigPath);
             if (!probe.config_url.empty()) {
                 std::string probe_contents;
@@ -456,7 +458,8 @@ int main(int argc, char **argv) {
     options.AddInputNpadStyleTag(HidNpadStyleSet_NpadStandard);
     auto renderer = pu::ui::render::Renderer::New(options);
     auto application = std::make_shared<nxgallery::GalleryApplication>(
-        renderer, std::move(album), std::move(bot), std::move(telegram_status));
+        renderer, std::move(album), std::move(bot), std::move(telegram_status),
+        release_updates_enabled);
     const Result load_result = application->Load();
     if (R_SUCCEEDED(load_result)) application->Show();
     application.reset();

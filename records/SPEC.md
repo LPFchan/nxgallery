@@ -16,11 +16,13 @@ Provide a stock-Album-inspired Nintendo Switch homebrew gallery that lets the op
 - Render a controller-first, touch-capable Plutonium grid, viewer, chat picker, sending state, and result state.
 - Discover Bot API chats from pending updates, merge configured chats, and persist credential-free chat metadata.
 - Upload only after the operator selects both media and destination.
+- Check stable GitHub releases silently and expose an operator-triggered in-app update only when a newer version is available.
 
 ## Invariants
 
 - Bot tokens live only in `/switch/nxgallery/telegram-bot.conf` and are never compiled, logged, cached, or packaged.
 - TLS peer and host verification remain enabled with the reviewed CA bundle.
+- Release updates require the expected public-repository URL, exact NRO asset name, GitHub-provided SHA-256 digest, and a structurally valid NRO before installation.
 - Album access is read-only.
 - TDLib enters the production boundary only if account-wide chat/history features become required.
 

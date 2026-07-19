@@ -23,13 +23,14 @@ SWITCH_OPENSSL_PREFIX ?= $(PORTLIBS)
 PLAYBACK_PREFIX ?=
 APP_TITLE   := NX Gallery
 APP_AUTHOR  := LPFchan
-APP_VERSION := 0.1.0
+APP_VERSION ?= 0.1.0
 APP_ICON    := $(CURDIR)/icon.jpg
 
 ARCH     := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -ftls-model=local-exec -fPIE
 CFLAGS   := -g -Wall -Wextra -Wpedantic -O2 -DNDEBUG -ffunction-sections -fdata-sections $(ARCH)
 CFLAGS   += $(INCLUDE)
 CXXFLAGS := $(CFLAGS) -std=gnu++17 -D__SWITCH__ -D_DEFAULT_SOURCE=1 -DCURL_STATICLIB
+CXXFLAGS += -DNXGALLERY_VERSION=\"$(APP_VERSION)\"
 CXXFLAGS += -fno-rtti
 ifeq ($(NXGALLERY_AUTOMATION_BUILD),1)
 CXXFLAGS += -DNXGALLERY_AUTOMATION_BUILD

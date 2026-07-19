@@ -1,5 +1,6 @@
 #include <nxgallery/album_index.hpp>
 #include <nxgallery/gallery_controller.hpp>
+#include <nxgallery/release_update.hpp>
 #include <nxgallery/telegram_config.hpp>
 #include <nxgallery/token_setup.hpp>
 
@@ -214,6 +215,15 @@ void form_decode_contract() {
     assert(nxgallery::form_field("token", "token").empty());
 }
 
+void release_version_contract() {
+    assert(nxgallery::is_newer_release("0.1.0", "v0.1.1"));
+    assert(nxgallery::is_newer_release("1.9.9", "2.0.0"));
+    assert(!nxgallery::is_newer_release("0.1.0", "0.1.0"));
+    assert(!nxgallery::is_newer_release("1.0.0", "0.99.99"));
+    assert(!nxgallery::is_newer_release("1.0.0", "v1.1.0-beta.1"));
+    assert(!nxgallery::is_newer_release("development", "1.0.0"));
+}
+
 }  // namespace
 
 int main() {
@@ -223,6 +233,7 @@ int main() {
     serialize_contract();
     http_request_contract();
     form_decode_contract();
+    release_version_contract();
     album_scan_contract();
     album_limit_keeps_newest();
     return 0;
