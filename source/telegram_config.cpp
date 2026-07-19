@@ -143,4 +143,45 @@ TelegramConfigResult load_telegram_config(const char *path) noexcept {
     }
 }
 
+std::optional<std::string> load_telegram_bot_token(const char *path) noexcept {
+    try {
+        if (path == nullptr || *path == '\0') return std::nullopt;
+        std::ifstream input(path, std::ios::binary);
+        if (!input) return std::nullopt;
+        std::string contents;
+        std::array<char, 1024> buffer{};
+        while (input) {
+            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            const std::streamsize count = input.gcount();
+            if (count > 0) {
+                if (contents.size() + static_cast<std::size_t>(count) > kMaximumConfigBytes) {
+                    return std::nullopt;
+                }
+                contents.append(buffer.data(), static_cast<std::size_t>(count));
+            }
+        }
+        if (!input.eof()) return std::nullopt;
+
+        std::optional<std::string> token;
+        std::string_view remaining(contents);
+        while (!remaining.empty()) {
+            const std::size_t newline = remaining.find('\n');
+            std::string_view line = trim(newline == std::string::npos
+                ? remaining : remaining.substr(0, newline));
+            remaining = newline == std::string::npos
+                ? std::string_view{} : remaining.substr(newline + 1);
+            if (line.empty() || line.front() == '#') continue;
+            const std::size_t separator = line.find('=');
+            if (separator == std::string_view::npos ||
+                trim(line.substr(0, separator)) != "bot_token") continue;
+            const std::string_view value = trim(line.substr(separator + 1));
+            if (token || !valid_token(value)) return std::nullopt;
+            token = std::string(value);
+        }
+        return token;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 }  // namespace nxgallery

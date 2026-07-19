@@ -12,7 +12,7 @@
 
 ### Near term
 
-- Run one non-sending nxlink probe to gate the corrected MP4 file I/O and pause/resume automatically, then exercise the cached picker, transfer progress, and explicit hbmenu return with captured diagnostics. Media-delivery probes remain explicit one-shot operations only.
+- Run one non-sending nxlink probe to gate the corrected MP4 file I/O and pause/resume automatically, then exercise progressive startup, QR onboarding, multi-select, the cached picker, and transfer progress with captured diagnostics. Validate one mixed-media Telegram album as an explicit one-shot delivery operation; media-delivery probes must not retry automatically.
 
 ### Deferred
 

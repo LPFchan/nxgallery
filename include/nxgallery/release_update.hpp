@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace nxgallery {
@@ -23,6 +24,9 @@ struct UpdateResult {
     std::uint64_t asset_size{};
 };
 
+using UpdateProgress =
+    std::function<bool(std::uint64_t current, std::uint64_t total)>;
+
 // Accepts MAJOR.MINOR.PATCH with an optional leading v. Release suffixes are
 // rejected so a stable build never silently installs a prerelease.
 bool is_newer_release(const std::string &current,
@@ -35,6 +39,7 @@ UpdateResult check_latest_release(
 UpdateResult install_release(
     const UpdateResult &available_release,
     const std::string &installed_path = kInstalledNroPath,
-    std::atomic<bool> *cancel_requested = nullptr);
+    std::atomic<bool> *cancel_requested = nullptr,
+    UpdateProgress progress = {});
 
 }  // namespace nxgallery

@@ -7,6 +7,8 @@ namespace nxgallery {
 
 void GalleryController::set_media(std::vector<MediaItem> media) {
     media_ = std::move(media);
+    selected_media_indices_.clear();
+    multi_select_active_ = false;
     if (media_.empty()) media_index_ = 0;
     else media_index_ = std::min(media_index_, media_.size() - 1);
 }
@@ -37,6 +39,37 @@ std::size_t GalleryController::grid_page_start() const noexcept {
     return page_size == 0 ? 0 : (media_index_ / page_size) * page_size;
 }
 
+bool GalleryController::is_media_selected(std::size_t index) const noexcept {
+    return std::binary_search(selected_media_indices_.begin(),
+                              selected_media_indices_.end(), index);
+}
+
+void GalleryController::toggle_current_media_selection() {
+    if (media_.empty()) return;
+    const auto position = std::lower_bound(selected_media_indices_.begin(),
+                                           selected_media_indices_.end(),
+                                           media_index_);
+    if (position != selected_media_indices_.end() && *position == media_index_) {
+        selected_media_indices_.erase(position);
+    } else if (selected_media_indices_.size() < kMaximumMultiSelect) {
+        selected_media_indices_.insert(position, media_index_);
+    }
+}
+
+std::vector<MediaItem> GalleryController::media_for_share() const {
+    std::vector<MediaItem> selected;
+    if (media_.empty()) return selected;
+    if (share_origin_ == Screen::Grid && multi_select_active_) {
+        selected.reserve(selected_media_indices_.size());
+        for (const std::size_t index : selected_media_indices_) {
+            if (index < media_.size()) selected.push_back(media_[index]);
+        }
+    } else {
+        selected.push_back(media_[media_index_]);
+    }
+    return selected;
+}
+
 void GalleryController::move_grid(Action action) {
     if (media_.empty()) return;
     const std::size_t current = media_index_;
@@ -58,7 +91,18 @@ void GalleryController::move_chat(Action action) {
 std::optional<ShareRequest> GalleryController::handle(Action action) {
     if (screen_ == Screen::Grid) {
         move_grid(action);
-        if (action == Action::Confirm && !media_.empty()) screen_ = Screen::Viewer;
+        if (action == Action::ToggleMultiSelect) {
+            multi_select_active_ = !multi_select_active_;
+            selected_media_indices_.clear();
+        } else if (action == Action::Confirm && !media_.empty()) {
+            if (multi_select_active_) toggle_current_media_selection();
+            else screen_ = Screen::Viewer;
+        } else if (action == Action::Share && !media_.empty() &&
+                   (!multi_select_active_ || !selected_media_indices_.empty())) {
+            chat_index_ = 0;
+            share_origin_ = Screen::Grid;
+            screen_ = Screen::ChatPicker;
+        }
         return std::nullopt;
     }
     if (screen_ == Screen::Viewer) {
@@ -67,21 +111,28 @@ std::optional<ShareRequest> GalleryController::handle(Action action) {
         else if (action == Action::Right && media_index_ + 1 < media_.size()) ++media_index_;
         else if (action == Action::Share) {
             chat_index_ = 0;
+            share_origin_ = Screen::Viewer;
             screen_ = Screen::ChatPicker;
         }
         return std::nullopt;
     }
     if (screen_ == Screen::ChatPicker) {
         move_chat(action);
-        if (action == Action::Back) screen_ = Screen::Viewer;
+        if (action == Action::Back) screen_ = share_origin_;
         else if (action == Action::Confirm && !media_.empty() && !chats_.empty()) {
+            std::vector<MediaItem> selected = media_for_share();
+            if (selected.empty()) return std::nullopt;
             screen_ = Screen::Sending;
-            return ShareRequest{media_[media_index_], chats_[chat_index_]};
+            return ShareRequest{std::move(selected), chats_[chat_index_]};
         }
         return std::nullopt;
     }
     if (screen_ == Screen::Result && (action == Action::Confirm || action == Action::Back)) {
-        screen_ = Screen::Viewer;
+        screen_ = share_origin_;
+        if (share_succeeded_ && share_origin_ == Screen::Grid) {
+            selected_media_indices_.clear();
+            multi_select_active_ = false;
+        }
     }
     return std::nullopt;
 }

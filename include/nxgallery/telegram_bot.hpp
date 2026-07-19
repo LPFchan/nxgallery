@@ -25,6 +25,9 @@ public:
     BotResult refresh_chats(std::vector<TelegramChat> &chats) noexcept;
     BotResult send_media(const MediaItem &media, const TelegramChat &chat,
                          TransferProgress progress = {}) noexcept;
+    BotResult send_media_group(const std::vector<MediaItem> &media,
+                               const TelegramChat &chat,
+                               TransferProgress progress = {}) noexcept;
 
 private:
     TelegramConfig config_;

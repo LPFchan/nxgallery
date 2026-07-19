@@ -26,6 +26,7 @@ constexpr std::size_t kMaximumChats = 128;
 constexpr std::size_t kMaximumMetadataRefreshes = 16;
 constexpr std::uint64_t kMaximumPhotoBytes = 10U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumVideoBytes = 50U * 1024U * 1024U;
+constexpr std::size_t kMaximumMediaGroupItems = 10;
 
 using JsonOwner = std::unique_ptr<json_object, decltype(&json_object_put)>;
 
@@ -258,7 +259,7 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
         cached_chats_ = std::move(deduplicated);
         if (!config_.discover_chats) {
             chats = cached_chats_;
-            return {true, "Configured chats loaded"};
+            return {true, {}};
         }
         std::size_t metadata_refreshed = 0;
         const std::size_t metadata_limit = std::min(cached_chats_.size(), kMaximumMetadataRefreshes);
@@ -322,7 +323,7 @@ BotResult TelegramBot::refresh_chats(std::vector<TelegramChat> &chats) noexcept 
                 ? "Could not save discovered chats"
                 : "Chats refreshed; could not save cache"};
         }
-        return {true, count == 0 ? "No new chats; showing saved destinations" : "Chat destinations refreshed"};
+        return {true, count == 0 ? std::string{} : "Chat destinations refreshed"};
     } catch (...) {
         chats = cached_chats_;
         return {!chats.empty(), chats.empty() ? "Chat discovery failed" : "Using cached chats"};
@@ -410,6 +411,143 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         return {true, "Sent to " + chat.title};
     } catch (...) {
         return {false, "Telegram upload failed"};
+    }
+}
+
+BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
+                                        const TelegramChat &chat,
+                                        TransferProgress progress) noexcept {
+    try {
+        if (media.size() == 1) return send_media(media.front(), chat, std::move(progress));
+        if (media.size() < 2 || media.size() > kMaximumMediaGroupItems) {
+            return {false, "Telegram albums require 2 to 10 captures"};
+        }
+        if (chat.id == 0) return {false, "Telegram destination is unavailable"};
+
+        std::vector<std::string> paths;
+        paths.reserve(media.size());
+        for (const MediaItem &item : media) {
+            std::string path;
+            std::string materialize_error;
+            if (!materialize_media_path(item, path, materialize_error)) {
+                return {false, materialize_error};
+            }
+            struct stat status {};
+            if (stat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode)) {
+                return {false, "A selected capture is unavailable"};
+            }
+            const std::uint64_t size = status.st_size < 0
+                ? 0U : static_cast<std::uint64_t>(status.st_size);
+            const std::uint64_t limit = item.kind == MediaKind::Photo
+                ? kMaximumPhotoBytes : kMaximumVideoBytes;
+            if (size == 0 || size > limit) {
+                return {false, item.kind == MediaKind::Photo
+                    ? "A photo exceeds the Bot API 10 MB limit"
+                    : "A video exceeds the Bot API 50 MB limit"};
+            }
+            paths.push_back(std::move(path));
+        }
+
+        CURL *curl = curl_easy_init();
+        ResponseBody body;
+        std::string error;
+        if (!configure_curl(curl, config_, "sendMediaGroup", body, error)) {
+            return {false, error};
+        }
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 900000L);
+        curl_mime *mime = curl_mime_init(curl);
+        if (mime == nullptr) {
+            curl_easy_cleanup(curl);
+            return {false, "Could not prepare Telegram album"};
+        }
+
+        curl_mimepart *part = curl_mime_addpart(mime);
+        curl_mime_name(part, "chat_id");
+        const std::string chat_id = std::to_string(chat.id);
+        curl_mime_data(part, chat_id.c_str(), CURL_ZERO_TERMINATED);
+
+        JsonOwner album(json_object_new_array(), json_object_put);
+        if (!album) {
+            curl_mime_free(mime);
+            curl_easy_cleanup(curl);
+            return {false, "Could not describe Telegram album"};
+        }
+        for (std::size_t index = 0; index < media.size(); ++index) {
+            json_object *entry = json_object_new_object();
+            if (entry == nullptr) {
+                curl_mime_free(mime);
+                curl_easy_cleanup(curl);
+                return {false, "Could not describe Telegram album"};
+            }
+            const bool video = media[index].kind == MediaKind::Video;
+            const std::string attachment = "attach://media" + std::to_string(index);
+            json_object_object_add(entry, "type",
+                                   json_object_new_string(video ? "video" : "photo"));
+            json_object_object_add(entry, "media",
+                                   json_object_new_string(attachment.c_str()));
+            if (video) {
+                json_object_object_add(entry, "width", json_object_new_int(1280));
+                json_object_object_add(entry, "height", json_object_new_int(720));
+                json_object_object_add(entry, "supports_streaming",
+                                       json_object_new_boolean(1));
+            }
+            json_object_array_add(album.get(), entry);
+        }
+        const char *serialized = json_object_to_json_string_ext(
+            album.get(), JSON_C_TO_STRING_PLAIN);
+        if (serialized == nullptr) {
+            curl_mime_free(mime);
+            curl_easy_cleanup(curl);
+            return {false, "Could not describe Telegram album"};
+        }
+        part = curl_mime_addpart(mime);
+        curl_mime_name(part, "media");
+        curl_mime_data(part, serialized, CURL_ZERO_TERMINATED);
+
+        for (std::size_t index = 0; index < media.size(); ++index) {
+            part = curl_mime_addpart(mime);
+            const std::string name = "media" + std::to_string(index);
+            curl_mime_name(part, name.c_str());
+            curl_mime_filedata(part, paths[index].c_str());
+            if (media[index].kind == MediaKind::Video) {
+                curl_mime_type(part, "video/mp4");
+            }
+        }
+        curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+        if (progress) {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, report_transfer);
+            curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+        }
+        const CURLcode code = curl_easy_perform(curl);
+        long response_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+        curl_mime_free(mime);
+        curl_easy_cleanup(curl);
+        if (code == CURLE_ABORTED_BY_CALLBACK) return {false, "Transfer cancelled"};
+        if (code != CURLE_OK || body.overflow) {
+            return {false, body.overflow ? "Telegram response exceeded its size limit" :
+                "Telegram album upload failed: " + std::string(curl_easy_strerror(code))};
+        }
+        JsonOwner root(nullptr, json_object_put);
+        json_object *result = nullptr;
+        if (!api_result(body.bytes, root, result, error)) {
+            return {false, error.empty() ? "Telegram rejected the album" : error};
+        }
+        if (response_code < 200 || response_code >= 300) {
+            return {false, "Telegram HTTPS returned status " +
+                std::to_string(response_code)};
+        }
+        if (json_object_get_type(result) != json_type_array ||
+            json_object_array_length(result) != media.size()) {
+            return {false, "Telegram returned an incomplete album response"};
+        }
+        std::printf("NXGALLERY_DIAGNOSTIC event=telegram_media_group items=%zu\n",
+                    media.size());
+        return {true, "Sent " + std::to_string(media.size()) + " captures to " +
+            chat.title};
+    } catch (...) {
+        return {false, "Telegram album upload failed"};
     }
 }
 

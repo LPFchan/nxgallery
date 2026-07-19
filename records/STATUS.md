@@ -2,16 +2,16 @@
 
 ## Snapshot
 
-- Last updated: 2026-07-17
+- Last updated: 2026-07-19
 - Overall posture: `active`
-- Current focus: physical Switch validation of playback controls, cached chat UX, transfer progress, and hbmenu return
+- Current focus: physical Switch validation of progressive startup, bot onboarding, playback controls, cached chat UX, transfer progress, and the release-update affordance
 - Highest-priority blocker: none for SD enumeration, networking, or Telegram photo/video delivery
 - Next operator decision needed: whether user-account TDLib login is acceptable for exhaustive Telegram chat enumeration
 - Related decisions: DEC-20260717-001
 
 ## Current state
 
-The repo-template v1.1.4 operating model is installed. The portable album, navigation, and configuration core passes host tests. Production and emulator-automation Plutonium/libnx builds link successfully on `yeowoolmac`. Telegram upload is asynchronous, reports libcurl transfer progress in the share sheet, and keeps runtime configuration outside Git. Chat destinations load from memory immediately while a single launch-time Bot API refresh updates the cache in the background.
+The repo-template v1.1.5 operating model is installed. The GitHub repository is public. The portable album, navigation, configuration, and release-version core passes host tests. Production and emulator-automation Plutonium/libnx builds link successfully on `yeowoolmac`. Production builds check the latest stable GitHub release silently at startup and show a bottom-left Minus Update action only for a newer semantic version; installation remains an explicit Minus/touch action, reports byte progress with the Telegram transfer treatment, and verifies the GitHub SHA-256 digest plus NRO structure before swapping the launched executable. Telegram upload is asynchronous, reports libcurl transfer progress in the share sheet, and keeps runtime configuration outside Git. NX Gallery accepts its own bot configuration or reuses the token in NX Torrent's configuration. Missing credentials open full-screen QR onboarding, while Bot Setup remains available from the Telegram share sheet. Interactive album enumeration now begins after the first UI shell is loaded and thumbnails fill one at a time with a short fade; this startup presentation awaits physical-device validation. The grid supports direct X-button sharing and a Plus-button multi-select mode capped at ten captures; multi-item sends use one Bot API `sendMediaGroup` request. Grid diagnostic chrome and routine chat-refresh/type labels are absent from the operator-facing UI. Chat destinations load from memory immediately while a single launch-time Bot API refresh updates the cache in the background.
 
 Ryujinx 1.3.3 now passes the photo-delivery pre-hardware gate: the production NRO
 loads its embedded ASET/NACP, renders two virtual-SD fixtures at about 60 FPS,
@@ -64,5 +64,5 @@ one-shot pause/resume verification.
 ### Product completeness
 
 - Status: `playback and transfer UX implemented; hardware validation pending`
-- Goal: validate playback pause/resume, transfer progress, cached chat opening, and hbmenu return; audio remains a separate playback gap.
+- Goal: validate progressive thumbnail loading, bot onboarding, playback pause/resume, transfer progress, cached chat opening, and the update action on hardware.
 - Dependency: successful physical-device share validation.

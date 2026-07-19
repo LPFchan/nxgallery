@@ -37,6 +37,8 @@ u64 __nx_heap_size = 256ULL * 1024ULL * 1024ULL;
 
 namespace {
 constexpr char kTelegramConfigPath[] = "sdmc:/switch/nxgallery/telegram-bot.conf";
+constexpr char kNxTorrentTelegramConfigPath[] =
+    "sdmc:/switch/nxtorrent/telegram-bot.conf";
 constexpr char kRawAlbumPath[] = "sdmc:/Nintendo/Album";
 
 struct ProbeOptions {
@@ -350,6 +352,18 @@ int run_probe(const nxgallery::AlbumScanResult &album, nxgallery::TelegramBot *b
 }
 }
 
+std::string installed_nro_path(int argc, char **argv) {
+    if (argc > 0 && argv != nullptr && argv[0] != nullptr) {
+        const std::string launched_path = argv[0];
+        if (launched_path.rfind("sdmc:/", 0) == 0 &&
+            launched_path.size() > 4 &&
+            launched_path.compare(launched_path.size() - 4, 4, ".nro") == 0) {
+            return launched_path;
+        }
+    }
+    return nxgallery::kInstalledNroPath;
+}
+
 int main(int argc, char **argv) {
     nxgallery::install_crash_diagnostics();
     const ProbeOptions probe = parse_probe_options(argc, argv);
@@ -377,6 +391,9 @@ int main(int argc, char **argv) {
     }
 
     std::unique_ptr<nxgallery::TelegramBot> bot;
+    bool telegram_token_present =
+        nxgallery::load_telegram_bot_token(kTelegramConfigPath).has_value() ||
+        nxgallery::load_telegram_bot_token(kNxTorrentTelegramConfigPath).has_value();
     if (curl_ready) {
         (void)nxgallery::ensure_https_ca_file();
         const nxgallery::HttpsTrustStatus trust = nxgallery::preflight_https_ca_file();
@@ -385,7 +402,26 @@ int main(int argc, char **argv) {
         } else {
             release_updates_enabled = true;
             auto config = nxgallery::load_telegram_config(kTelegramConfigPath);
+            const char *config_source = "sd";
+            if (!config && probe.config_url.empty()) {
+                auto shared_token = nxgallery::load_telegram_bot_token(
+                    kTelegramConfigPath);
+                if (shared_token) config_source = "nxgallery-token";
+                else {
+                    shared_token = nxgallery::load_telegram_bot_token(
+                        kNxTorrentTelegramConfigPath);
+                    if (shared_token) config_source = "nxtorrent-shared";
+                }
+                if (shared_token) {
+                    nxgallery::TelegramConfig shared_config;
+                    shared_config.bot_token = std::move(*shared_token);
+                    config.config = std::move(shared_config);
+                    config.error.clear();
+                    config.line = 0;
+                }
+            }
             if (!probe.config_url.empty()) {
+                config_source = "injected";
                 std::string probe_contents;
                 std::string probe_error;
                 if (fetch_probe_config(probe, probe_contents, probe_error)) {
@@ -407,28 +443,27 @@ int main(int argc, char **argv) {
                 }
             }
             if (config) {
+                telegram_token_present = true;
                 std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config source=%s configured_chats=%zu discover=%s\n",
-                            probe.config_url.empty() ? "sd" : "injected",
+                            config_source,
                             config.config->chats.size(),
                             config.config->discover_chats ? "true" : "false");
                 bot = std::make_unique<nxgallery::TelegramBot>(std::move(*config.config));
             } else {
                 telegram_status = config.error;
                 std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config source=%s result=fail line=%zu\n",
-                            probe.config_url.empty() ? "sd" : "injected", config.line);
+                            config_source, config.line);
             }
         }
     }
 
     nxgallery::AlbumScanResult album;
+    if (probe_mode) {
 #ifdef NXGALLERY_AUTOMATION_BUILD
-    album = nxgallery::scan_album(kRawAlbumPath);
+        album = nxgallery::scan_album(kRawAlbumPath);
 #else
-    album = nxgallery::scan_horizon_album();
+        album = nxgallery::scan_horizon_album();
 #endif
-    if (!probe_mode && (!album || album.items.empty())) {
-        nxgallery::AlbumScanResult raw_album = nxgallery::scan_album(kRawAlbumPath);
-        if (raw_album && !raw_album.items.empty()) album = std::move(raw_album);
     }
     if (probe_mode) {
         const int result = run_probe(album, bot.get(), telegram_status,
@@ -459,7 +494,8 @@ int main(int argc, char **argv) {
     auto renderer = pu::ui::render::Renderer::New(options);
     auto application = std::make_shared<nxgallery::GalleryApplication>(
         renderer, std::move(album), std::move(bot), std::move(telegram_status),
-        release_updates_enabled);
+        telegram_token_present, release_updates_enabled,
+        installed_nro_path(argc, argv));
     const Result load_result = application->Load();
     if (R_SUCCEEDED(load_result)) application->Show();
     application.reset();

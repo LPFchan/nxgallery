@@ -166,6 +166,28 @@ int cancel_transfer(void *context, curl_off_t, curl_off_t,
     return cancel != nullptr && cancel->load() ? 1 : 0;
 }
 
+struct UpdateTransfer {
+    std::atomic<bool> *cancel_requested{};
+    UpdateProgress *progress{};
+};
+
+int report_update_transfer(void *context, curl_off_t download_total,
+                           curl_off_t downloaded, curl_off_t, curl_off_t) {
+    auto *transfer = static_cast<UpdateTransfer *>(context);
+    if (transfer == nullptr) return 0;
+    if (transfer->cancel_requested != nullptr &&
+        transfer->cancel_requested->load()) {
+        return 1;
+    }
+    if (transfer->progress != nullptr && *transfer->progress) {
+        return (*transfer->progress)(
+            downloaded > 0 ? static_cast<std::uint64_t>(downloaded) : 0,
+            download_total > 0 ? static_cast<std::uint64_t>(download_total) : 0)
+            ? 0 : 1;
+    }
+    return 0;
+}
+
 bool configure_https(CURL *curl, const std::string &url,
                      std::atomic<bool> *cancel_requested) {
     if (curl == nullptr) return false;
@@ -218,7 +240,8 @@ bool fetch_latest_release(std::string &body, long &response_code,
 }
 
 bool download_asset(const ReleaseAsset &release, const std::string &path,
-                    std::atomic<bool> *cancel_requested, std::string &error) {
+                    std::atomic<bool> *cancel_requested,
+                    UpdateProgress &progress, std::string &error) {
     std::FILE *output = std::fopen(path.c_str(), "wb");
     if (output == nullptr) {
         error = "Could not create the update file on the SD card";
@@ -232,10 +255,14 @@ bool download_asset(const ReleaseAsset &release, const std::string &path,
         return false;
     }
     FileDownload download{output, 0, release.size};
+    UpdateTransfer transfer{cancel_requested, &progress};
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_limited);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &download);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, report_update_transfer);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &transfer);
     const CURLcode code = curl_easy_perform(curl);
     long response_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
@@ -376,7 +403,8 @@ UpdateResult check_latest_release(const std::string &current_version,
 
 UpdateResult install_release(const UpdateResult &available_release,
                              const std::string &installed_path,
-                             std::atomic<bool> *cancel_requested) {
+                             std::atomic<bool> *cancel_requested,
+                             UpdateProgress progress) {
     if (available_release.outcome != UpdateOutcome::Available ||
         available_release.version.empty() || available_release.asset_url.empty() ||
         available_release.sha256.size() != 64 ||
@@ -391,7 +419,7 @@ UpdateResult install_release(const UpdateResult &available_release,
 
     const std::string temporary = installed_path + ".update";
     (void)std::remove(temporary.c_str());
-    if (!download_asset(release, temporary, cancel_requested, error)) {
+    if (!download_asset(release, temporary, cancel_requested, progress, error)) {
         return {UpdateOutcome::Failed, release.version, std::move(error)};
     }
     std::string actual_digest;

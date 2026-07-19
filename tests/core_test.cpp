@@ -38,7 +38,8 @@ void controller_flow() {
     assert(controller.chats().front().title == "Alpha");
     const auto request = controller.handle(nxgallery::Action::Confirm);
     assert(request.has_value());
-    assert(request->media.kind == nxgallery::MediaKind::Video);
+    assert(request->media.size() == 1);
+    assert(request->media.front().kind == nxgallery::MediaKind::Video);
     assert(request->chat.id == 1);
     assert(controller.screen() == nxgallery::Screen::Sending);
     controller.finish_share(true, "Sent");
@@ -46,6 +47,55 @@ void controller_flow() {
     assert(controller.share_succeeded());
     controller.handle(nxgallery::Action::Back);
     assert(controller.screen() == nxgallery::Screen::Viewer);
+}
+
+void grid_multi_select_flow() {
+    nxgallery::GalleryController controller;
+    std::vector<nxgallery::MediaItem> media;
+    for (int index = 0; index < 12; ++index) {
+        media.push_back({std::to_string(index) + ".jpg", std::to_string(index),
+                         nxgallery::MediaKind::Photo, index, 1});
+    }
+    controller.set_media(std::move(media));
+    controller.set_chats({{42, "Saved", "private"}});
+
+    controller.handle(nxgallery::Action::Share);
+    assert(controller.screen() == nxgallery::Screen::ChatPicker);
+    auto request = controller.handle(nxgallery::Action::Confirm);
+    assert(request && request->media.size() == 1);
+    controller.finish_share(true, "Sent");
+    controller.handle(nxgallery::Action::Confirm);
+    assert(controller.screen() == nxgallery::Screen::Grid);
+
+    controller.handle(nxgallery::Action::ToggleMultiSelect);
+    assert(controller.multi_select_active());
+    for (int index = 0; index < 12; ++index) {
+        controller.select_media(static_cast<std::size_t>(index));
+        controller.handle(nxgallery::Action::Confirm);
+    }
+    assert(controller.selected_media_count() ==
+           nxgallery::GalleryController::kMaximumMultiSelect);
+    assert(controller.is_media_selected(0));
+    assert(!controller.is_media_selected(10));
+    controller.select_media(0);
+    controller.handle(nxgallery::Action::Confirm);
+    assert(!controller.is_media_selected(0));
+    assert(controller.selected_media_count() == 9);
+
+    controller.handle(nxgallery::Action::Share);
+    assert(controller.screen() == nxgallery::Screen::ChatPicker);
+    controller.handle(nxgallery::Action::Back);
+    assert(controller.screen() == nxgallery::Screen::Grid);
+    assert(controller.multi_select_active());
+    assert(controller.selected_media_count() == 9);
+    controller.handle(nxgallery::Action::Share);
+    request = controller.handle(nxgallery::Action::Confirm);
+    assert(request && request->media.size() == 9);
+    controller.finish_share(true, "Sent album");
+    controller.handle(nxgallery::Action::Confirm);
+    assert(controller.screen() == nxgallery::Screen::Grid);
+    assert(!controller.multi_select_active());
+    assert(controller.selected_media_count() == 0);
 }
 
 void grid_boundaries() {
@@ -174,6 +224,23 @@ void serialize_contract() {
     assert(parsed.config->chats.front().title == "Family room");
 }
 
+void shared_token_contract() {
+    char pattern[] = "/tmp/nxgallery-token-test.XXXXXX";
+    const int descriptor = mkstemp(pattern);
+    assert(descriptor >= 0);
+    close(descriptor);
+    {
+        std::ofstream output(pattern);
+        output << "# NX Torrent configuration\n"
+               << "bot_token=123456:shared_DEF-123\n"
+               << "allowed_chat_id=-1001234567890\n";
+    }
+    const auto token = nxgallery::load_telegram_bot_token(pattern);
+    assert(token);
+    assert(*token == "123456:shared_DEF-123");
+    std::remove(pattern);
+}
+
 void http_request_contract() {
     nxgallery::HttpRequest request;
     bool malformed = true;
@@ -228,9 +295,11 @@ void release_version_contract() {
 
 int main() {
     controller_flow();
+    grid_multi_select_flow();
     grid_boundaries();
     config_contract();
     serialize_contract();
+    shared_token_contract();
     http_request_contract();
     form_decode_contract();
     release_version_contract();

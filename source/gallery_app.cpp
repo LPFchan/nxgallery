@@ -64,15 +64,8 @@ constexpr std::size_t kThumbnailCachePages = 4;
 constexpr std::size_t kMaximumThumbnailTextures =
     kThumbnailPageSize * kThumbnailCachePages;
 
-// Viewer overlay bars and touch chips.
+// Viewer bottom controls and video timeline.
 constexpr std::int32_t kViewerBarHeight = 64;
-constexpr std::int32_t kBackChipX = 24;
-constexpr std::int32_t kBackChipY = 12;
-constexpr std::int32_t kBackChipWidth = 140;
-constexpr std::int32_t kShareChipX = 1116;
-constexpr std::int32_t kShareChipY = 12;
-constexpr std::int32_t kShareChipWidth = 140;
-constexpr std::int32_t kChipHeight = 40;
 constexpr std::int32_t kTimelineX = 40;
 constexpr std::int32_t kTimelineY = 634;
 constexpr std::int32_t kTimelineWidth = 980;
@@ -117,13 +110,18 @@ double ease_out_cubic(double t) {
 // Token setup overlay: reuses the chat-picker dialog footprint, QR panel on
 // the left, instructions on the right.
 constexpr char kTelegramConfigPath[] = "sdmc:/switch/nxgallery/telegram-bot.conf";
+constexpr char kRawAlbumPath[] = "sdmc:/Nintendo/Album";
+#ifdef NXGALLERY_AUTOMATION_BUILD
+constexpr char kAutomationUpdateMarker[] =
+    "sdmc:/switch/nxgallery/automation-update";
+#endif
 constexpr std::uint16_t kSetupPort = 8135;
 constexpr std::int32_t kSetupQrX = 240;
 constexpr std::int32_t kSetupQrY = 176;
 constexpr std::int32_t kSetupQrPanel = 320;
 constexpr std::int32_t kSetupTextX = 600;
 
-enum class HintTag { View, Hbmenu, PlayPause, Prev, Next, Share, Back, Setup, Update };
+enum class HintTag { View, PlayPause, Prev, Next, Share, Back, MultiSelect, Update };
 
 void render_outline(pu::ui::render::Renderer::Ref &drawer, pu::ui::Color color,
                     std::int32_t x, std::int32_t y, std::int32_t width,
@@ -168,19 +166,25 @@ public:
                    std::atomic<std::uint64_t> &transfer_total,
                    std::atomic<bool> &transfer_cancel_requested,
                    bool &setup_active, std::string &setup_url,
-                   std::string &setup_notice, bool &telegram_ready,
-                   bool &update_notice_active, std::string &update_notice,
-                   bool &update_available, bool &update_installing)
+                   std::string &setup_notice, bool &setup_fullscreen,
+                   bool &album_loading, bool &update_notice_active,
+                   std::string &update_notice, bool &update_available,
+                   bool &update_installing,
+                   std::atomic<std::uint64_t> &update_current,
+                   std::atomic<std::uint64_t> &update_total)
         : controller_(controller), status_(status), video_player_(video_player),
           transfer_current_(transfer_current), transfer_total_(transfer_total),
           transfer_cancel_requested_(transfer_cancel_requested),
           setup_active_(setup_active), setup_url_(setup_url),
-          setup_notice_(setup_notice), telegram_ready_(telegram_ready),
+          setup_notice_(setup_notice), setup_fullscreen_(setup_fullscreen),
+          album_loading_(album_loading),
           update_notice_active_(update_notice_active),
           update_notice_(update_notice), update_available_(update_available),
-          update_installing_(update_installing) {
+          update_installing_(update_installing),
+          update_current_(update_current), update_total_(update_total) {
         thumbnail_states_.resize(controller_.media().size(), ThumbnailState::Unloaded);
-        preload_initial_thumbnail_window();
+        thumbnail_slots_.reserve(std::min(controller_.media().size(),
+                                          kMaximumThumbnailTextures));
     }
 
     ~GalleryElement() override { clear_textures(); }
@@ -203,13 +207,20 @@ public:
     }
 
     void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32, const s32) override {
-        update_thumbnail_cache();
+        if (thumbnail_loading_started_) update_thumbnail_cache();
         text_slot_ = 0;
         hint_zones_.clear();
         ++pulse_frame_;
         advance_transition();
         switch (controller_.screen()) {
-            case Screen::Grid: render_grid(drawer); break;
+            case Screen::Grid:
+                render_grid(drawer);
+                if (transition_from_ == Screen::ChatPicker && transition_t_ < 1.0) {
+                    render_chat_picker(drawer, 1.0 - transition_linear_t_,
+                                       static_cast<std::int32_t>(
+                                           transition_t_ * kDialogRiseHeight));
+                }
+                break;
             case Screen::Viewer:
                 render_viewer(drawer);
                 if (transition_from_ == Screen::ChatPicker && transition_t_ < 1.0) {
@@ -218,9 +229,9 @@ public:
                                            transition_t_ * kDialogRiseHeight));
                 }
                 break;
-            case Screen::ChatPicker: render_viewer(drawer); render_chat_picker(drawer); break;
-            case Screen::Sending: render_viewer(drawer); render_sending(drawer); break;
-            case Screen::Result: render_viewer(drawer); render_result(drawer); break;
+            case Screen::ChatPicker: render_share_background(drawer); render_chat_picker(drawer); break;
+            case Screen::Sending: render_share_background(drawer); render_sending(drawer); break;
+            case Screen::Result: render_share_background(drawer); render_result(drawer); break;
         }
         if (setup_active_) render_token_setup(drawer);
         else if (update_notice_active_) render_update_notice(drawer);
@@ -229,6 +240,7 @@ public:
             pu::ui::render::DeleteTexture(text_slots_[index].texture);
         }
         text_slots_.resize(text_slot_);
+        thumbnail_loading_started_ = true;
     }
 
 private:
@@ -238,6 +250,7 @@ private:
     struct ThumbnailSlot {
         std::size_t media_index{};
         pu::sdl2::Texture texture{nullptr};
+        std::uint32_t loaded_frame{};
     };
     struct HintZone {
         std::int32_t x;
@@ -287,27 +300,21 @@ private:
             return true;
         }
 
-        thumbnail_slots_.push_back({media_index, texture});
+        thumbnail_slots_.push_back({media_index, texture, pulse_frame_});
         thumbnail_states_[media_index] = ThumbnailState::Cached;
         return true;
     }
 
-    void preload_initial_thumbnail_window() {
-        const std::size_t preload_count =
-            std::min(controller_.media().size(), kMaximumThumbnailTextures);
-        thumbnail_slots_.reserve(preload_count);
-        for (std::size_t index = 0; index < preload_count; ++index) {
-            load_thumbnail(index);
-        }
-        const std::size_t failed = static_cast<std::size_t>(std::count(
-            thumbnail_states_.begin(), thumbnail_states_.end(), ThumbnailState::Failed));
-        std::printf("NXGALLERY_DIAGNOSTIC event=thumbnail_preload "
-                    "state=initial loaded=%zu failed=%zu capacity=%zu\n",
-                    thumbnail_slots_.size(), failed, kMaximumThumbnailTextures);
-    }
-
     void update_thumbnail_cache() {
         const auto &media = controller_.media();
+        if (thumbnail_states_.size() != media.size()) {
+            for (auto &slot : thumbnail_slots_) {
+                pu::ui::render::DeleteTexture(slot.texture);
+            }
+            thumbnail_slots_.clear();
+            thumbnail_states_.assign(media.size(), ThumbnailState::Unloaded);
+            thumbnail_slots_.reserve(std::min(media.size(), kMaximumThumbnailTextures));
+        }
         if (media.empty()) return;
 
         const std::size_t page_count =
@@ -360,6 +367,18 @@ private:
                                       return slot.media_index == media_index;
                                   });
         return found == thumbnail_slots_.end() ? nullptr : found->texture;
+    }
+
+    std::uint8_t thumbnail_alpha(std::size_t media_index) const {
+        constexpr std::uint32_t kThumbnailFadeFrames = 12;
+        auto found = std::find_if(thumbnail_slots_.begin(), thumbnail_slots_.end(),
+                                  [media_index](const ThumbnailSlot &slot) {
+                                      return slot.media_index == media_index;
+                                  });
+        if (found == thumbnail_slots_.end()) return 0;
+        const std::uint32_t age = pulse_frame_ - found->loaded_frame;
+        return static_cast<std::uint8_t>(
+            std::min<std::uint32_t>(255, age * 255 / kThumbnailFadeFrames));
     }
 
     pu::sdl2::Texture text_texture(const std::string &value, std::int32_t size,
@@ -447,7 +466,14 @@ private:
     void advance_transition() {
         const Screen screen = controller_.screen();
         const std::size_t media_index = controller_.selected_media_index();
-        if (screen != shown_screen_) {
+        const bool update_notice_opened =
+            update_notice_active_ && !shown_update_notice_;
+        shown_update_notice_ = update_notice_active_;
+        if (update_notice_opened) {
+            transition_from_ = shown_screen_;
+            transition_frame_ = 0;
+            viewer_navigation_transition_ = false;
+        } else if (screen != shown_screen_) {
             transition_from_ = shown_screen_;
             shown_screen_ = screen;
             transition_frame_ = 0;
@@ -559,15 +585,27 @@ private:
 
     void render_grid(pu::ui::render::Renderer::Ref &drawer) {
         drawer->RenderRectangleFill(kBackground, 0, 0, kWidth, kHeight);
-        text(drawer, "Album", 29, kInk, 60, 27);
+        text(drawer, controller_.multi_select_active() ? "Select captures" : "Album",
+             29, kInk, 60, 27);
         drawer->RenderRectangleFill(kRule, kRuleInsetX, kHeaderRuleY,
                                     kWidth - 2 * kRuleInsetX, 1);
         drawer->RenderRectangleFill(kRule, kRuleInsetX, kFooterRuleY,
                                     kWidth - 2 * kRuleInsetX, 1);
         const auto &media = controller_.media();
-        if (!media.empty()) {
+        if (controller_.multi_select_active()) {
+            text_right(drawer,
+                       std::to_string(controller_.selected_media_count()) + " / " +
+                           std::to_string(GalleryController::kMaximumMultiSelect) +
+                           " selected",
+                       18, kMuted, kWidth - 60, 40);
+        } else if (!media.empty()) {
             text_right(drawer, std::to_string(media.size()) + " captures", 18,
                        kMuted, kWidth - 60, 40);
+        } else if (album_loading_) {
+            text_center(drawer, "Loading captures...", 25, kInk,
+                        kWidth / 2, 320);
+            text_center(drawer, "The gallery will fill in as captures become ready.",
+                        18, kMuted, kWidth / 2, 366);
         } else {
             text_center(drawer, "There are no screenshots or videos.", 25, kInk,
                         kWidth / 2, 320);
@@ -585,11 +623,26 @@ private:
             const std::int32_t x = kGridX + column * kCellStrideX;
             const std::int32_t y = kGridY + row * kCellStrideY;
             drawer->RenderRectangleFill(kBlack, x, y, kCellWidth, kCellHeight);
-            fitted_image(drawer, thumbnail(index), x, y, kCellWidth, kCellHeight);
+            fitted_image(drawer, thumbnail(index), x, y, kCellWidth, kCellHeight,
+                         thumbnail_alpha(index));
             if (media[index].kind == MediaKind::Video) {
                 drawer->RenderRoundedRectangleFill({0, 0, 0, 170}, x + kCellWidth - 58,
                                                    y + kCellHeight - 32, 50, 24, 4);
                 text(drawer, "▶", 16, kWhite, x + kCellWidth - 45, y + kCellHeight - 30);
+            }
+            if (controller_.multi_select_active()) {
+                const bool marked = controller_.is_media_selected(index);
+                if (marked) {
+                    render_outline(drawer, kAccent, x + 2, y + 2,
+                                   kCellWidth - 4, kCellHeight - 4, 5);
+                }
+                drawer->RenderRoundedRectangleFill(
+                    marked ? kAccent : pu::ui::Color{0, 0, 0, 150},
+                    x + 12, y + 12, 32, 32, 16);
+                render_outline(drawer, kWhite, x + 18, y + 18, 20, 20, 2);
+                if (marked) {
+                    drawer->RenderRectangleFill(kWhite, x + 22, y + 22, 12, 12);
+                }
             }
         }
         // Drawn after every cell so the thick border is never clipped by a
@@ -607,26 +660,34 @@ private:
             render_outline(drawer, pulse_color(), x - 9, y - 9,
                            kCellWidth + 18, kCellHeight + 18, 6);
         }
-        if (update_available_) {
-            text(drawer, "(-) Update", 22, kDialogAction, 60, 663);
-            hint_zones_.push_back({36, kFooterRuleY + 1, 160,
-                                   kHeight - kFooterRuleY - 1,
-                                   HintTag::Update});
-        }
         std::vector<HintItem> grid_hints;
-        if (!telegram_ready_) {
-            grid_hints.push_back({" Set up Telegram", HintTag::Setup, 44});
+        if (update_available_) {
+            hints(drawer, {{" Update", HintTag::Update, 0}},
+                  210, 663, 22, kInk, kFooterRuleY + 1,
+                  kHeight - kFooterRuleY - 1);
         }
-        grid_hints.push_back({" Quit", HintTag::Hbmenu, 44});
-        grid_hints.push_back({" View", HintTag::View, 0});
+        grid_hints.push_back({controller_.multi_select_active() ? " Select" : " View",
+                              HintTag::View, 36});
+        grid_hints.push_back({" Share", HintTag::Share, 36});
+        grid_hints.push_back({controller_.multi_select_active() ? " Done" : " Select",
+                              HintTag::MultiSelect, 0});
         hints(drawer, grid_hints,
               kWidth - 60, 663, 22, kInk, kFooterRuleY + 1, kHeight - kFooterRuleY - 1);
+    }
+
+    void render_share_background(pu::ui::render::Renderer::Ref &drawer) {
+        if (controller_.share_origin() == Screen::Grid) render_grid(drawer);
+        else render_viewer(drawer);
     }
 
     void render_qr(pu::ui::render::Renderer::Ref &drawer, const std::string &content,
                    std::int32_t x, std::int32_t y, std::int32_t panel) {
         drawer->RenderRoundedRectangleFill(kWhite, x, y, panel, panel, 8);
-        if (content.empty()) return;
+        if (content.empty()) {
+            text_center(drawer, "QR unavailable", 18, kFailure,
+                        x + panel / 2, y + panel / 2 - 10);
+            return;
+        }
         if (qr_key_ != content) {
             qr_key_ = content;
             qr_size_ = 0;
@@ -664,6 +725,27 @@ private:
     }
 
     void render_token_setup(pu::ui::render::Renderer::Ref &drawer) {
+        if (setup_fullscreen_) {
+            drawer->RenderRectangleFill(kBackground, 0, 0, kWidth, kHeight);
+            text_center(drawer, "Connect Telegram", 34, kInk, kWidth / 2, 54);
+            text_center(drawer, "Create a bot with @BotFather, then connect NX Gallery.",
+                        19, kMuted, kWidth / 2, 104);
+            render_qr(drawer, setup_url_, 170, 150, 390);
+            text(drawer, "1. Keep the Switch and phone on the same Wi-Fi.",
+                 20, kInk, 630, 192);
+            text(drawer, "2. Scan the QR code with your phone.",
+                 20, kInk, 630, 246);
+            text(drawer, "3. Paste the bot token and send it.",
+                 20, kInk, 630, 300);
+            text(drawer, "Browser address", 17, kMuted, 630, 374);
+            text(drawer, clipped(setup_url_, 48), 18, kInk, 630, 406);
+            if (!setup_notice_.empty()) {
+                text(drawer, clipped(setup_notice_, 54), 18, kMuted, 630, 466);
+            }
+            text_center(drawer, " Continue without Telegram", 22, kDialogAction,
+                        kWidth / 2, 660);
+            return;
+        }
         dialog_face(drawer, 150, kPickerX, kPickerY, kPickerWidth, kPickerHeight,
                     kPickerButtonY);
         text_center(drawer, "Set up Telegram sharing", 25, kInk, kWidth / 2, 124);
@@ -724,20 +806,6 @@ private:
             }
         }
 
-        drawer->RenderRectangleFill(kOverlayBar, 0, 0, kWidth, kViewerBarHeight);
-        drawer->RenderRoundedRectangleFill({255, 255, 255, 34}, kBackChipX, kBackChipY,
-                                           kBackChipWidth, kChipHeight, 8);
-        text_center(drawer, " Back", 20, kWhite,
-                    kBackChipX + kBackChipWidth / 2, kBackChipY + 8);
-        drawer->RenderRoundedRectangleFill(kAccent, kShareChipX, kShareChipY,
-                                           kShareChipWidth, kChipHeight, 8);
-        text_center(drawer, " Share", 20, kBlack,
-                    kShareChipX + kShareChipWidth / 2, kShareChipY + 8);
-        if (!media.empty()) {
-            text(drawer, clipped(media[controller_.selected_media_index()].filename, 48),
-                 20, kOverlayInk, 190, 20);
-        }
-
         drawer->RenderRectangleFill(kOverlayBar, 0, kHeight - kViewerBarHeight,
                                     kWidth, kViewerBarHeight);
         if (!media.empty()) {
@@ -785,6 +853,8 @@ private:
         dialog_face(drawer, 140, kPickerX, kPickerY + rise, kPickerWidth,
                     kPickerHeight, kPickerButtonY + rise, opacity);
         text_center(drawer, "Share to Telegram", 25, kInk, kWidth / 2, 128 + rise);
+        text_right(drawer, " Bot Setup", 18, kMuted,
+                   kPickerX + kPickerWidth - 24, 130 + rise);
         if (!status_.empty()) {
             text_center(drawer, clipped(status_, 70), 18, kMuted, kWidth / 2, 166 + rise);
         }
@@ -820,10 +890,6 @@ private:
             }
             text(drawer, clipped(chats[index].title, 44), 23, kInk,
                  kPickerRowX + 16, row_y + 11);
-            if (chats[index].type != "configured") {
-                text_right(drawer, chats[index].type, 16, kMuted,
-                           kPickerRowX + kPickerRowWidth - 16, row_y + 17);
-            }
         }
         const std::int32_t third = kPickerWidth / 3;
         drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
@@ -842,15 +908,15 @@ private:
         render_alpha_ = previous_render_alpha;
     }
 
-    void render_sending(pu::ui::render::Renderer::Ref &drawer) {
-        const std::int32_t rise = dialog_rise();
+    void render_progress_panel(pu::ui::render::Renderer::Ref &drawer,
+                               const std::string &title,
+                               const std::string &preparing,
+                               const std::string &button,
+                               std::uint64_t current, std::uint64_t total,
+                               std::int32_t rise) {
         dialog_face(drawer, 170, kDialogX, kDialogY + rise, kDialogWidth,
                     kDialogHeight, kDialogButtonY + rise);
-        const bool cancelling = transfer_cancel_requested_.load();
-        text_center(drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
-                    25, kInk, kWidth / 2, 258 + rise);
-        const std::uint64_t current = transfer_current_.load();
-        const std::uint64_t total = transfer_total_.load();
+        text_center(drawer, title, 25, kInk, kWidth / 2, 258 + rise);
         const std::uint64_t percent = total > 0
             ? std::min<std::uint64_t>(100, current * 100 / total) : 0;
         constexpr std::int32_t bar_x = 360;
@@ -863,15 +929,20 @@ private:
             drawer->RenderRoundedRectangleFill(kAccent, bar_x, 330 + rise,
                                                fill_width, 12, 6);
         }
-        text_center(drawer, total > 0 ? std::to_string(percent) + "%" : "Preparing upload...",
+        text_center(drawer, total > 0 ? std::to_string(percent) + "%" : preparing,
                     18, kMuted, kWidth / 2, 358 + rise);
-        if (cancelling) {
-            text_center(drawer, "Waiting for Telegram to stop", 24, kMuted,
-                        kWidth / 2, kDialogButtonY + 20 + rise);
-        } else {
-            text_center(drawer, " Cancel", 24, kDialogAction,
-                        kWidth / 2, kDialogButtonY + 20 + rise);
-        }
+        text_center(drawer, button, 24,
+                    button.empty() ? kMuted : kDialogAction,
+                    kWidth / 2, kDialogButtonY + 20 + rise);
+    }
+
+    void render_sending(pu::ui::render::Renderer::Ref &drawer) {
+        const bool cancelling = transfer_cancel_requested_.load();
+        render_progress_panel(
+            drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
+            "Preparing upload...",
+            cancelling ? "Waiting for Telegram to stop" : " Cancel",
+            transfer_current_.load(), transfer_total_.load(), dialog_rise());
     }
 
     void render_result(pu::ui::render::Renderer::Ref &drawer) {
@@ -888,17 +959,21 @@ private:
     }
 
     void render_update_notice(pu::ui::render::Renderer::Ref &drawer) {
-        dialog_face(drawer, 170, kDialogX, kDialogY, kDialogWidth,
-                    kDialogHeight, kDialogButtonY);
-        text_center(drawer, update_installing_ ? "Updating NX Gallery"
-                                               : "NX Gallery update",
-                    29, update_installing_ ? kDialogAction : kInk,
-                    kWidth / 2, 252);
+        const std::int32_t rise = dialog_rise();
+        if (update_installing_) {
+            render_progress_panel(drawer, "Updating NX Gallery", "Preparing download...",
+                                  "Please wait", update_current_.load(),
+                                  update_total_.load(), rise);
+            return;
+        }
+        dialog_face(drawer, 170, kDialogX, kDialogY + rise, kDialogWidth,
+                    kDialogHeight, kDialogButtonY + rise);
+        text_center(drawer, "NX Gallery update", 29, kInk,
+                    kWidth / 2, 252 + rise);
         text_center(drawer, clipped(update_notice_, 62), 20, kInk,
-                    kWidth / 2, 322);
-        text_center(drawer, update_installing_ ? "Please wait" : "OK", 24,
-                    update_installing_ ? kMuted : kDialogAction,
-                    kWidth / 2, kDialogButtonY + 20);
+                    kWidth / 2, 322 + rise);
+        text_center(drawer, "OK", 24, kDialogAction,
+                    kWidth / 2, kDialogButtonY + 20 + rise);
     }
 
     GalleryController &controller_;
@@ -910,11 +985,14 @@ private:
     bool &setup_active_;
     std::string &setup_url_;
     std::string &setup_notice_;
-    bool &telegram_ready_;
+    bool &setup_fullscreen_;
+    bool &album_loading_;
     bool &update_notice_active_;
     std::string &update_notice_;
     bool &update_available_;
     bool &update_installing_;
+    std::atomic<std::uint64_t> &update_current_;
+    std::atomic<std::uint64_t> &update_total_;
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
     std::vector<ThumbnailSlot> thumbnail_slots_;
@@ -926,6 +1004,7 @@ private:
     std::size_t text_slot_{};
     std::uint8_t render_alpha_{255};
     std::uint32_t pulse_frame_{};
+    bool thumbnail_loading_started_{};
     Screen shown_screen_{Screen::Grid};
     Screen transition_from_{Screen::Grid};
     std::size_t shown_media_index_{};
@@ -935,18 +1014,22 @@ private:
     double transition_linear_t_{1.0};
     double transition_t_{1.0};
     bool viewer_navigation_transition_{};
+    bool shown_update_notice_{};
 };
 
 GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
                                        AlbumScanResult album,
                                        std::unique_ptr<TelegramBot> bot,
                                        std::string telegram_status,
-                                       bool release_updates_enabled)
+                                       bool telegram_token_present,
+                                       bool release_updates_enabled,
+                                       std::string installed_nro_path)
     : Application(std::move(renderer)), bot_(std::move(bot)),
       status_(std::move(telegram_status)),
-      release_updates_enabled_(release_updates_enabled) {
+      telegram_token_present_(telegram_token_present),
+      release_updates_enabled_(release_updates_enabled),
+      installed_nro_path_(std::move(installed_nro_path)) {
     controller_.set_media(std::move(album.items));
-    telegram_ready_ = bot_ != nullptr;
     if (!album.error.empty()) status_ = album.error;
     else if (album.truncated) status_ = "Album limited to the newest 5000 captures";
 }
@@ -956,6 +1039,7 @@ GalleryApplication::~GalleryApplication() {
     update_cancel_requested_ = true;
     if (share_worker_.joinable()) share_worker_.join();
     if (chat_refresh_worker_.joinable()) chat_refresh_worker_.join();
+    if (album_worker_.joinable()) album_worker_.join();
     if (update_worker_.joinable()) update_worker_.join();
 }
 
@@ -967,9 +1051,11 @@ void GalleryApplication::OnLoad() {
                                                 transfer_current_, transfer_total_,
                                                 transfer_cancel_requested_,
                                                 setup_active_, setup_url_,
-                                                setup_notice_, telegram_ready_,
+                                                setup_notice_, setup_fullscreen_,
+                                                album_loading_,
                                                 update_notice_active_, update_notice_,
-                                                update_available_, update_installing_);
+                                                update_available_, update_installing_,
+                                                update_current_, update_total_);
     layout_->Add(element_);
     LoadLayout(layout_);
     SetOnInput([this](const u64 down, const u64, const u64 held, const pu::ui::TouchPoint touch) {
@@ -985,6 +1071,7 @@ void GalleryApplication::OnLoad() {
         poll_share_worker();
         poll_chat_refresh();
         poll_token_setup();
+        poll_album_scan();
         poll_release_update();
         advance_automation();
     });
@@ -993,14 +1080,19 @@ void GalleryApplication::OnLoad() {
         bot_->cached_chats(cached);
         controller_.set_chats(std::move(cached));
         start_chat_refresh();
+    } else if (!telegram_token_present_) {
+        open_token_setup(true);
     }
+    start_album_scan();
     start_release_check();
 }
 
 void GalleryApplication::start_release_check() {
 #ifdef NXGALLERY_AUTOMATION_BUILD
-    return;
-#else
+    struct stat marker {};
+    if (stat(kAutomationUpdateMarker, &marker) != 0 ||
+        !S_ISREG(marker.st_mode)) return;
+#endif
     if (!release_updates_enabled_ || update_worker_.joinable()) return;
     update_worker_ = std::thread([this] {
         UpdateResult result = check_latest_release(
@@ -1008,18 +1100,24 @@ void GalleryApplication::start_release_check() {
         std::lock_guard<std::mutex> lock(update_mutex_);
         update_result_ = std::move(result);
     });
-#endif
 }
 
 void GalleryApplication::start_release_install() {
     if (!available_update_ || update_worker_.joinable() || update_installing_) return;
     update_installing_ = true;
+    update_current_ = 0;
+    update_total_ = available_update_->asset_size;
     update_notice_ = "Downloading and verifying " + available_update_->version + "...";
     update_notice_active_ = true;
     const UpdateResult release = *available_update_;
     update_worker_ = std::thread([this, release] {
+        auto progress = [this](std::uint64_t current, std::uint64_t total) {
+            update_current_ = current;
+            if (total > 0) update_total_ = total;
+            return !update_cancel_requested_.load();
+        };
         UpdateResult result = install_release(
-            release, kInstalledNroPath, &update_cancel_requested_);
+            release, installed_nro_path_, &update_cancel_requested_, progress);
         std::lock_guard<std::mutex> lock(update_mutex_);
         update_result_ = std::move(result);
     });
@@ -1052,6 +1150,40 @@ void GalleryApplication::poll_release_update() {
         update_notice_ = std::move(result->message);
         update_notice_active_ = true;
     }
+}
+
+void GalleryApplication::start_album_scan() {
+    if (album_worker_.joinable() || !controller_.media().empty()) return;
+    album_loading_ = true;
+    if (controller_.media().empty() && status_.empty()) status_ = "Loading captures...";
+    album_worker_ = std::thread([this] {
+#ifdef NXGALLERY_AUTOMATION_BUILD
+        AlbumScanResult album = scan_album(kRawAlbumPath);
+#else
+        AlbumScanResult album = scan_horizon_album();
+        if (!album || album.items.empty()) {
+            AlbumScanResult raw_album = scan_album(kRawAlbumPath);
+            if (raw_album && !raw_album.items.empty()) album = std::move(raw_album);
+        }
+#endif
+        std::lock_guard<std::mutex> lock(album_mutex_);
+        album_result_ = std::move(album);
+    });
+}
+
+void GalleryApplication::poll_album_scan() {
+    std::optional<AlbumScanResult> album;
+    {
+        std::lock_guard<std::mutex> lock(album_mutex_);
+        album.swap(album_result_);
+    }
+    if (!album) return;
+    if (album_worker_.joinable()) album_worker_.join();
+    album_loading_ = false;
+    controller_.set_media(std::move(album->items));
+    if (!album->error.empty()) status_ = std::move(album->error);
+    else if (album->truncated) status_ = "Album limited to the newest 5000 captures";
+    else if (status_ == "Loading captures...") status_.clear();
 }
 
 void GalleryApplication::advance_automation() {
@@ -1112,21 +1244,25 @@ void GalleryApplication::open_chat_picker() {
 }
 
 void GalleryApplication::start_share(ShareRequest request) {
-    if (!bot_ || share_worker_.joinable()) {
+    if (!bot_ || share_worker_.joinable() || request.media.empty()) {
         controller_.finish_share(false, "Telegram is unavailable");
         return;
     }
     transfer_current_ = 0;
-    transfer_total_ = request.media.size;
+    std::uint64_t expected_total = 0;
+    for (const MediaItem &item : request.media) expected_total += item.size;
+    transfer_total_ = expected_total;
     transfer_cancel_requested_ = false;
     share_worker_ = std::thread([this, request = std::move(request)]() mutable {
-        BotResult result = bot_->send_media(
-            request.media, request.chat,
+        auto progress =
             [this](std::uint64_t current, std::uint64_t total) {
                 transfer_current_ = current;
                 if (total > 0) transfer_total_ = total;
                 return !transfer_cancel_requested_.load();
-            });
+            };
+        BotResult result = request.media.size() > 1
+            ? bot_->send_media_group(request.media, request.chat, progress)
+            : bot_->send_media(request.media.front(), request.chat, progress);
         std::lock_guard<std::mutex> lock(share_mutex_);
         share_result_ = std::move(result);
     });
@@ -1166,17 +1302,6 @@ void GalleryApplication::poll_share_worker() {
     if (!result) return;
     if (share_worker_.joinable()) share_worker_.join();
     controller_.finish_share(result->success, std::move(result->message));
-}
-
-void GalleryApplication::exit_to_hbmenu() {
-    const bool supported = envHasNextLoad();
-    const Result result = supported
-        ? envSetNextLoad("sdmc:/hbmenu.nro", "sdmc:/hbmenu.nro") : 0;
-    std::printf("NXGALLERY_DIAGNOSTIC event=exit target=hbmenu supported=%s rc=0x%08x\n",
-                supported ? "true" : "false", static_cast<unsigned int>(result));
-    std::fflush(stdout);
-    if (video_player_) video_player_->stop();
-    Close();
 }
 
 void GalleryApplication::toggle_video_playback() {
@@ -1225,7 +1350,6 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
                 static_cast<int>(*tag));
     switch (*tag) {
         case HintTag::View: controller_.handle(Action::Confirm); break;
-        case HintTag::Hbmenu: exit_to_hbmenu(); break;
         case HintTag::PlayPause: toggle_video_playback(); break;
         case HintTag::Prev:
         case HintTag::Next:
@@ -1233,7 +1357,9 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
             controller_.handle(*tag == HintTag::Prev ? Action::Left : Action::Right);
             break;
         case HintTag::Share: open_chat_picker(); break;
-        case HintTag::Setup: open_token_setup(); break;
+        case HintTag::MultiSelect:
+            controller_.handle(Action::ToggleMultiSelect);
+            break;
         case HintTag::Update: start_release_install(); break;
         case HintTag::Back:
             if (video_player_) video_player_->stop();
@@ -1280,13 +1406,7 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
         return;
     }
     if (controller_.screen() == Screen::Viewer) {
-        if (touch.HitsRegion(kBackChipX, kBackChipY, kBackChipWidth, kChipHeight)) {
-            if (video_player_) video_player_->stop();
-            controller_.handle(Action::Back);
-        } else if (touch.HitsRegion(kShareChipX, kShareChipY, kShareChipWidth, kChipHeight)) {
-            open_chat_picker();
-        } else if (touch.HitsRegion(0, kViewerBarHeight, kWidth,
-                                    kHeight - 2 * kViewerBarHeight)) {
+        if (touch.HitsRegion(0, 0, kWidth, kHeight - kViewerBarHeight)) {
             toggle_video_playback();
         }
         return;
@@ -1328,12 +1448,18 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
     if (controller_.screen() == Screen::Result) controller_.handle(Action::Confirm);
 }
 
-void GalleryApplication::open_token_setup() {
+void GalleryApplication::open_token_setup(bool fullscreen) {
     if (setup_active_) return;
     if (video_player_) video_player_->stop();
+    setup_fullscreen_ = fullscreen;
+    if (fullscreen) {
+        setup_active_ = true;
+        setup_notice_ = "Preparing phone connection...";
+    }
     const std::uint32_t host = static_cast<std::uint32_t>(gethostid());
     if (host == 0 || host == INADDR_NONE || host == htonl(INADDR_LOOPBACK)) {
         status_ = "Connect the Switch to a Wi-Fi network first";
+        if (fullscreen) setup_notice_ = status_;
         return;
     }
     in_addr address{};
@@ -1341,6 +1467,7 @@ void GalleryApplication::open_token_setup() {
     char ip_text[INET_ADDRSTRLEN] = {};
     if (inet_ntop(AF_INET, &address, ip_text, sizeof(ip_text)) == nullptr) {
         status_ = "Could not read the console's network address";
+        if (fullscreen) setup_notice_ = status_;
         return;
     }
     std::uint32_t raw = 0;
@@ -1351,6 +1478,7 @@ void GalleryApplication::open_token_setup() {
     std::string error;
     if (!server->start(ip_text, kSetupPort, secret, error)) {
         status_ = error;
+        if (fullscreen) setup_notice_ = status_;
         return;
     }
     setup_server_ = std::move(server);
@@ -1363,6 +1491,7 @@ void GalleryApplication::open_token_setup() {
 
 void GalleryApplication::close_token_setup() {
     setup_active_ = false;
+    setup_fullscreen_ = false;
     if (setup_server_) {
         setup_server_->stop();
         setup_server_.reset();
@@ -1408,7 +1537,7 @@ void GalleryApplication::apply_setup_token() {
     std::printf("NXGALLERY_DIAGNOSTIC event=telegram_config_persist path=%s result=%s\n",
                 kTelegramConfigPath, persisted ? "pass" : "fail");
     bot_ = std::make_unique<TelegramBot>(std::move(config));
-    telegram_ready_ = true;
+    telegram_token_present_ = true;
     std::vector<TelegramChat> cached;
     bot_->cached_chats(cached);
     controller_.set_chats(std::move(cached));
@@ -1454,8 +1583,7 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         if (controller_.screen() == Screen::Grid) {
             on_hint_bar = touch_start_y_ >= kFooterRuleY;
         } else if (controller_.screen() == Screen::Viewer) {
-            on_hint_bar = touch_start_y_ < kViewerBarHeight ||
-                touch_start_y_ >= kHeight - kViewerBarHeight;
+            on_hint_bar = touch_start_y_ >= kHeight - kViewerBarHeight;
         }
         const bool swipe = !on_hint_bar &&
             (std::abs(dx) >= kSwipeThreshold || std::abs(dy) >= kSwipeThreshold);
@@ -1497,11 +1625,6 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     }
 
     if (setup_active_) {
-        if ((down & HidNpadButton_Plus) != 0) {
-            close_token_setup();
-            exit_to_hbmenu();
-            return;
-        }
         if ((down & HidNpadButton_B) != 0) {
             close_token_setup();
             status_ = "Telegram setup cancelled";
@@ -1520,8 +1643,14 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         start_release_install();
         return;
     }
-    if ((down & HidNpadButton_Plus) != 0 && controller_.screen() != Screen::Sending) {
-        exit_to_hbmenu();
+    if ((down & HidNpadButton_Plus) != 0 &&
+        controller_.screen() == Screen::ChatPicker) {
+        open_token_setup();
+        return;
+    }
+    if ((down & HidNpadButton_Plus) != 0 &&
+        controller_.screen() == Screen::Grid) {
+        controller_.handle(Action::ToggleMultiSelect);
         return;
     }
     if (controller_.screen() == Screen::Sending) {
@@ -1543,7 +1672,12 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             video_player_->stop();
         }
     }
-    if ((down & HidNpadButton_X) != 0 && controller_.screen() == Screen::Viewer) { open_chat_picker(); return; }
+    if ((down & HidNpadButton_X) != 0 &&
+        (controller_.screen() == Screen::Grid ||
+         controller_.screen() == Screen::Viewer)) {
+        open_chat_picker();
+        return;
+    }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::Grid) {
         open_token_setup();
         return;
