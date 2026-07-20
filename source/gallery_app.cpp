@@ -1,4 +1,5 @@
 #include <nxgallery/gallery_app.hpp>
+#include <nxgallery/telegram_batches.hpp>
 #include <nxgallery/horizon_album.hpp>
 #include <nxgallery/release_update.hpp>
 #include <nxgallery/video_player.hpp>
@@ -590,9 +591,7 @@ private:
         const auto &media = controller_.media();
         if (controller_.multi_select_active()) {
             text_right(drawer,
-                       std::to_string(controller_.selected_media_count()) + " / " +
-                           std::to_string(GalleryController::kMaximumMultiSelect) +
-                           " selected",
+                       std::to_string(controller_.selected_media_count()) + " selected",
                        18, kMuted, kWidth - 60, 40);
         } else if (!media.empty()) {
             text_right(drawer, std::to_string(media.size()) + " captures", 18,
@@ -1258,9 +1257,18 @@ void GalleryApplication::start_share(ShareRequest request) {
                 if (total > 0) transfer_total_ = total;
                 return !transfer_cancel_requested_.load();
             };
-        BotResult result = request.media.size() > 1
-            ? bot_->send_media_group(request.media, request.chat, progress)
-            : bot_->send_media(request.media.front(), request.chat, progress);
+        BotResult result = send_telegram_batches(
+            request.media, progress,
+            [this, &request](const MediaItem &media,
+                             TelegramBot::TransferProgress batch_progress) {
+                return bot_->send_media(media, request.chat,
+                                        std::move(batch_progress));
+            },
+            [this, &request](const std::vector<MediaItem> &media,
+                             TelegramBot::TransferProgress batch_progress) {
+                return bot_->send_media_group(media, request.chat,
+                                              std::move(batch_progress));
+            });
         std::lock_guard<std::mutex> lock(share_mutex_);
         share_result_ = std::move(result);
     });
@@ -1600,9 +1608,11 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     }
 
     // Held d-pad or stick directions repeat after a short delay.
-    static constexpr std::array<std::uint64_t, 4> kDirectionMasks{
+    static constexpr std::array<std::uint64_t, 8> kDirectionMasks{
         HidNpadButton_AnyUp, HidNpadButton_AnyDown,
-        HidNpadButton_AnyLeft, HidNpadButton_AnyRight};
+        HidNpadButton_Left, HidNpadButton_Right,
+        HidNpadButton_StickLLeft, HidNpadButton_StickLRight,
+        HidNpadButton_StickRLeft, HidNpadButton_StickRRight};
     constexpr std::uint32_t kRepeatDelayFrames = 18;
     constexpr std::uint32_t kRepeatIntervalFrames = 5;
     std::uint64_t direction_fire = 0;
@@ -1621,6 +1631,14 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             dir_hold_frames_[index] = 0;
         }
     }
+    const std::uint64_t dpad_horizontal_fire = direction_fire &
+        (HidNpadButton_Left | HidNpadButton_Right);
+    const std::uint64_t left_stick_horizontal_fire = direction_fire &
+        (HidNpadButton_StickLLeft | HidNpadButton_StickLRight);
+    const std::uint64_t any_horizontal_fire = direction_fire &
+        (HidNpadButton_Left | HidNpadButton_Right |
+         HidNpadButton_StickLLeft | HidNpadButton_StickLRight |
+         HidNpadButton_StickRLeft | HidNpadButton_StickRRight);
 
     if (setup_active_) {
         if ((down & HidNpadButton_B) != 0) {
@@ -1666,8 +1684,23 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             return;
         }
         if ((down & HidNpadButton_B) != 0 ||
-            (direction_fire & (HidNpadButton_AnyLeft | HidNpadButton_AnyRight)) != 0) {
+            dpad_horizontal_fire != 0) {
             video_player_->stop();
+        }
+        if ((down & HidNpadButton_B) == 0 && dpad_horizontal_fire == 0 &&
+            left_stick_horizontal_fire != 0) {
+            if (video_player_->active() && !video_player_->paused()) {
+                constexpr std::int64_t kSeekStepMs = 5000;
+                video_player_->seek_relative(
+                    (left_stick_horizontal_fire & HidNpadButton_StickLLeft) != 0
+                        ? -kSeekStepMs : kSeekStepMs);
+            }
+            return;
+        }
+        if (dpad_horizontal_fire == 0 &&
+            (any_horizontal_fire &
+             (HidNpadButton_StickRLeft | HidNpadButton_StickRRight)) != 0) {
+            return;
         }
     }
     if ((down & HidNpadButton_X) != 0 &&
@@ -1687,8 +1720,12 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     std::optional<ShareRequest> request;
     if ((down & HidNpadButton_A) != 0) request = controller_.handle(Action::Confirm);
     else if ((down & HidNpadButton_B) != 0) controller_.handle(Action::Back);
-    else if ((direction_fire & HidNpadButton_AnyLeft) != 0) controller_.handle(Action::Left);
-    else if ((direction_fire & HidNpadButton_AnyRight) != 0) controller_.handle(Action::Right);
+    else if ((any_horizontal_fire &
+              (HidNpadButton_Left | HidNpadButton_StickLLeft |
+               HidNpadButton_StickRLeft)) != 0) controller_.handle(Action::Left);
+    else if ((any_horizontal_fire &
+              (HidNpadButton_Right | HidNpadButton_StickLRight |
+               HidNpadButton_StickRRight)) != 0) controller_.handle(Action::Right);
     else if ((direction_fire & HidNpadButton_AnyUp) != 0) controller_.handle(Action::Up);
     else if ((direction_fire & HidNpadButton_AnyDown) != 0) controller_.handle(Action::Down);
     if (request) start_share(std::move(*request));

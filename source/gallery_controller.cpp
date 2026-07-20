@@ -51,7 +51,7 @@ void GalleryController::toggle_current_media_selection() {
                                            media_index_);
     if (position != selected_media_indices_.end() && *position == media_index_) {
         selected_media_indices_.erase(position);
-    } else if (selected_media_indices_.size() < kMaximumMultiSelect) {
+    } else {
         selected_media_indices_.insert(position, media_index_);
     }
 }

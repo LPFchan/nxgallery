@@ -3,19 +3,20 @@
 - Project: NX Gallery
 - Project id: `nxgallery`
 - Operator: LPFchan
-- Last updated: 2026-07-19
+- Last updated: 2026-07-21
 - Related decisions: DEC-20260717-001
 
 ## Thesis
 
-Provide a stock-Album-inspired Nintendo Switch homebrew gallery that lets the operator browse captures and explicitly share one capture or a selected album of up to ten captures to one Telegram destination through a bot.
+Provide a stock-Album-inspired Nintendo Switch homebrew gallery that lets the operator browse captures and explicitly share one capture or an ordered selection to one Telegram destination through a bot. Multi-select delivery is partitioned into sequential Bot API batches of up to ten captures.
 
 ## Core capabilities
 
 - Read captures from `sdmc:/Nintendo/Album` without modifying them.
 - Render a controller-first, touch-capable Plutonium grid, viewer, chat picker, sending state, and result state.
 - Discover Bot API chats from pending updates, merge configured chats, and persist credential-free chat metadata.
-- Upload only after the operator selects both media and destination; multi-select uploads use one Bot API media-group request.
+- Play MP4 captures in-app with AAC audio, pause/resume, progress, and left-stick seeking while D-pad navigation continues to change captures.
+- Upload only after the operator selects both media and destination; multi-select uploads preserve order and use sequential Bot API requests containing no more than ten captures each.
 - Check stable GitHub releases silently and expose an operator-triggered in-app update only when a newer version is available.
 
 ## Invariants
@@ -29,5 +30,5 @@ Provide a stock-Album-inspired Nintendo Switch homebrew gallery that lets the op
 ## Non-goals for the current slice
 
 - Editing or deleting captures.
-- In-app MP4 playback or trimming.
+- Capture trimming or transcoding.
 - Telegram user-account login or complete historical chat enumeration.

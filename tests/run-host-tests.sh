@@ -9,6 +9,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic \
     "$repo_root/tests/core_test.cpp" \
     "$repo_root/source/album_index.cpp" \
     "$repo_root/source/gallery_controller.cpp" \
+    "$repo_root/source/telegram_batches.cpp" \
     "$repo_root/source/release_version.cpp" \
     "$repo_root/source/telegram_config.cpp" \
     "$repo_root/source/token_setup.cpp" \

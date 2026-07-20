@@ -23,7 +23,6 @@ class GalleryController {
 public:
     static constexpr std::size_t kGridColumns = 4;
     static constexpr std::size_t kVisibleRows = 3;
-    static constexpr std::size_t kMaximumMultiSelect = 10;
 
     void set_media(std::vector<MediaItem> media);
     void set_chats(std::vector<TelegramChat> chats);

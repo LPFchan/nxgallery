@@ -21,6 +21,13 @@ INCLUDES    := include $(PLUTONIUM_PREFIX)/include
 SWITCH_CURL_PREFIX ?= $(PORTLIBS)
 SWITCH_OPENSSL_PREFIX ?= $(PORTLIBS)
 PLAYBACK_PREFIX ?=
+ifneq ($(strip $(PLAYBACK_PREFIX)),)
+PLAYBACK_AAC_DECODER := $(shell $(DEVKITPRO)/devkitA64/bin/aarch64-none-elf-nm -g \
+	$(PLAYBACK_PREFIX)/lib/libavcodec.a 2>/dev/null | grep -c 'ff_aac_decoder')
+ifeq ($(PLAYBACK_AAC_DECODER),0)
+$(error PLAYBACK_PREFIX must provide an FFmpeg libavcodec with the AAC decoder enabled. Run scripts/build-switch-ffmpeg.sh)
+endif
+endif
 APP_TITLE   := NX Gallery
 APP_AUTHOR  := LPFchan
 APP_VERSION ?= 0.1.2

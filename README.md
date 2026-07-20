@@ -1,6 +1,6 @@
 # NX Gallery
 
-NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled after the stock Album flow. On Horizon it enumerates both NAND and SD captures through the `caps:a` Album Accessor service; host tests and Ryujinx fixtures use the filesystem scanner. It presents a four-column capture grid and viewer, and shares one capture or an album of up to ten captures through a Telegram bot after an explicit destination picker.
+NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled after the stock Album flow. On Horizon it enumerates both NAND and SD captures through the `caps:a` Album Accessor service; host tests and Ryujinx fixtures use the filesystem scanner. It presents a four-column capture grid and viewer, and shares one capture or an ordered selection through a Telegram bot after an explicit destination picker. Large selections are sent sequentially in Telegram batches of up to ten.
 
 ## Current prototype
 
@@ -8,16 +8,16 @@ NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled
 - Stock-inspired grid, viewer, modal chat picker, sending state, and result dialog.
 - Controller and touchscreen targets for captures, Back, Share, chat rows, Send, and Cancel.
 - One asynchronous Telegram Bot API refresh at launch, plus configured and persisted destinations; opening Share reads the in-memory cache immediately.
-- `sendPhoto`, `sendVideo`, and mixed-media `sendMediaGroup` multipart uploads on a worker thread with colored transfer progress and B-button cancellation.
+- `sendPhoto`, `sendVideo`, and mixed-media `sendMediaGroup` multipart uploads on a worker thread with colored whole-selection transfer progress and B-button cancellation; selections larger than ten are partitioned into ordered Bot API requests.
 - Bot tokens remain SD-card configuration and are never compiled or packaged.
-- Video captures use Album Accessor JPEG thumbnails. FFmpeg-backed in-app video playback and pause/resume are implemented; audio output remains outside this prototype slice.
+- Video captures use Album Accessor JPEG thumbnails. FFmpeg-backed playback includes AAC audio, pause/resume, elapsed progress, and five-second left-stick seeking.
 
 ## Controls
 
 | Surface | Controls |
 | --- | --- |
-| Grid | D-pad moves, A opens, X shares the current capture, + enters multi-select; in multi-select A marks up to ten captures and X shares them as one Telegram album. When a newer release is available, Minus or the bottom-left Minus Update button installs it. |
-| Viewer | Left/right changes capture, A plays/pauses video, X opens Telegram share, B returns; videos show elapsed and total playback progress |
+| Grid | D-pad moves, A opens, X shares the current capture, + enters multi-select; in multi-select A marks captures and X shares the selection in ordered Telegram batches of up to ten. When a newer release is available, Minus or the bottom-left Minus Update button installs it. |
+| Viewer | D-pad left/right changes capture, A plays/pauses video, left-stick left/right seeks five seconds while playing, X opens Telegram share, B returns; videos show elapsed and total playback progress |
 | Chat picker | Up/down selects, A sends, Y refreshes chats, + opens Bot Setup, B cancels |
 | Sending | B aborts the active Telegram transfer |
 
@@ -90,6 +90,17 @@ export PLAYBACK_PREFIX=/path/to/staged/switch-ffmpeg-portlibs
 export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
 make -j4 APP_VERSION=0.1.2
 ```
+
+`PLAYBACK_PREFIX` must contain a Switch FFmpeg build with H.264 and AAC
+decoders. Build a compatible FFmpeg 7.1 Switch source tree into a fresh prefix
+before building NX Gallery:
+
+```sh
+scripts/build-switch-ffmpeg.sh /path/to/ffmpeg-7.1 /path/to/build /path/to/prefix
+export PLAYBACK_PREFIX=/path/to/prefix
+```
+
+The Makefile rejects playback prefixes that do not register the AAC decoder.
 
 For Ryujinx UI verification, `make automation` produces a separate
 `nxgallery-automation.nro`. It advances grid → viewer → chat picker without

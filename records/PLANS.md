@@ -12,9 +12,8 @@
 
 ### Near term
 
-- Run one non-sending nxlink probe to gate the corrected MP4 file I/O and pause/resume automatically, then exercise progressive startup, QR onboarding, multi-select, the cached picker, and transfer progress with captured diagnostics. Validate one mixed-media Telegram album as an explicit one-shot delivery operation; media-delivery probes must not retry automatically.
+- Run one non-sending nxlink probe to gate MP4 audio, pause/resume, and left-stick seeking on hardware, then exercise progressive startup, QR onboarding, large multi-select, the cached picker, and whole-selection transfer progress with captured diagnostics. Validate one selection larger than ten as an explicit one-shot Telegram delivery operation; media-delivery probes must not retry automatically.
 
 ### Deferred
 
-- Audio decoding/output for MP4 playback.
 - User-account TDLib integration, pending explicit acceptance of personal-account authentication; bot-authorized TDLib remains update-only.

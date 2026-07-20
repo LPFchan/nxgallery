@@ -2,16 +2,16 @@
 
 ## Snapshot
 
-- Last updated: 2026-07-19
+- Last updated: 2026-07-21
 - Overall posture: `active`
-- Current focus: physical Switch validation of progressive startup, bot onboarding, playback controls, cached chat UX, and transfer progress
+- Current focus: physical Switch validation of audio playback, left-stick seeking, large-selection batching, progressive startup, bot onboarding, cached chat UX, and transfer progress
 - Highest-priority blocker: none for SD enumeration, networking, or Telegram photo/video delivery
 - Next operator decision needed: whether user-account TDLib login is acceptable for exhaustive Telegram chat enumeration
 - Related decisions: DEC-20260717-001
 
 ## Current state
 
-The repo-template v1.1.5 operating model is installed. The GitHub repository is public. The portable album, navigation, configuration, and release-version core passes host tests. Production and emulator-automation Plutonium/libnx builds link successfully on `yeowoolmac`. Production builds check the latest stable GitHub release silently at startup and show a bottom-left Minus Update action only for a newer semantic version; installation remains an explicit Minus/touch action, reports byte progress with the Telegram transfer treatment, and verifies the GitHub SHA-256 digest plus NRO structure before swapping the launched executable. Telegram upload is asynchronous, reports libcurl transfer progress in the share sheet, and keeps runtime configuration outside Git. NX Gallery accepts its own bot configuration or reuses the token in NX Torrent's configuration. Missing credentials open full-screen QR onboarding, while Bot Setup remains available from the Telegram share sheet. Interactive album enumeration now begins after the first UI shell is loaded and thumbnails fill one at a time with a short fade; this startup presentation awaits physical-device validation. The grid supports direct X-button sharing and a Plus-button multi-select mode capped at ten captures; multi-item sends use one Bot API `sendMediaGroup` request. Grid diagnostic chrome and routine chat-refresh/type labels are absent from the operator-facing UI. Chat destinations load from memory immediately while a single launch-time Bot API refresh updates the cache in the background.
+The repo-template v1.1.5 operating model is installed. The GitHub repository is public. The portable album, navigation, configuration, and release-version core passes host tests. Production and emulator-automation Plutonium/libnx builds link successfully on `yeowoolmac`. Production builds check the latest stable GitHub release silently at startup and show a bottom-left Minus Update action only for a newer semantic version; installation remains an explicit Minus/touch action, reports byte progress with the Telegram transfer treatment, and verifies the GitHub SHA-256 digest plus NRO structure before swapping the launched executable. Telegram upload is asynchronous, reports whole-selection progress in the share sheet, and keeps runtime configuration outside Git. NX Gallery accepts its own bot configuration or reuses the token in NX Torrent's configuration. Missing credentials open full-screen QR onboarding, while Bot Setup remains available from the Telegram share sheet. Interactive album enumeration begins after the first UI shell is loaded and thumbnails fill one at a time with a short fade; this startup presentation awaits physical-device validation. The grid supports direct X-button sharing and uncapped Plus-button multi-select. Ordered selections are sent sequentially in Bot API batches of up to ten, stop on the first failure or cancellation, and preserve selection unless the full transfer succeeds. Grid diagnostic chrome and routine chat-refresh/type labels are absent from the operator-facing UI. Chat destinations load from memory immediately while a single launch-time Bot API refresh updates the cache in the background.
 
 Ryujinx 1.3.3 now passes the photo-delivery pre-hardware gate: the production NRO
 loads its embedded ASET/NACP, renders two virtual-SD fixtures at about 60 FPS,
@@ -53,13 +53,17 @@ credential channel, resolved two saved destinations, and delivered one real
 photo plus one real MP4 through Telegram. The harness treats any missing phase
 as a nonzero failure and the operator independently observed both deliveries.
 Telegram confirmed the uploaded MP4 as 1280x720 and the operator confirmed its
-16:9 aspect ratio. Album Accessor video thumbnails and FFmpeg-backed video-only
-playback are built. A non-sending hardware probe isolated playback startup to
-FFmpeg interpreting `sdmc:` as an unsupported URL protocol; the player now uses
-the file protocol explicitly, the Album Accessor materializer honors short
-reads, and a fresh cache generation prevents reuse of older malformed files.
-That correction is built but awaits the next hbmenu NetLoader window for its
-one-shot pause/resume verification.
+16:9 aspect ratio. Album Accessor video thumbnails and FFmpeg-backed playback
+are built. The player uses the file protocol explicitly, the Album Accessor
+materializer honors short reads, and a fresh cache generation prevents reuse of
+older malformed files.
+
+Ryujinx 1.3.3 now passes real H.264/AAC playback.
+The emulator AudioRenderer ran against an AAC-enabled Switch FFmpeg build, and
+an OpenAL wave capture contained the fixture's expected non-silent 1 kHz signal.
+The build rejects playback prefixes that omit the AAC decoder. Video playback
+accepts five-second left-stick seeks while D-pad left/right remains capture
+navigation. These audio and seeking changes await physical-device validation.
 
 ## Active tracks
 
@@ -72,6 +76,6 @@ one-shot pause/resume verification.
 
 ### Product completeness
 
-- Status: `playback and transfer UX implemented; hardware validation pending`
-- Goal: validate progressive thumbnail loading, bot onboarding, playback pause/resume, transfer progress, cached chat opening, and the update action on hardware.
+- Status: `playback, seeking, and batched transfer UX implemented; hardware validation pending`
+- Goal: validate progressive thumbnail loading, bot onboarding, playback audio/pause/resume/seeking, large-selection transfer progress, cached chat opening, and the update action on hardware.
 - Dependency: successful physical-device share validation.

@@ -1,6 +1,7 @@
 #include <nxgallery/album_index.hpp>
 #include <nxgallery/gallery_controller.hpp>
 #include <nxgallery/release_update.hpp>
+#include <nxgallery/telegram_batches.hpp>
 #include <nxgallery/telegram_config.hpp>
 #include <nxgallery/token_setup.hpp>
 
@@ -52,7 +53,7 @@ void controller_flow() {
 void grid_multi_select_flow() {
     nxgallery::GalleryController controller;
     std::vector<nxgallery::MediaItem> media;
-    for (int index = 0; index < 12; ++index) {
+    for (int index = 0; index < 25; ++index) {
         media.push_back({std::to_string(index) + ".jpg", std::to_string(index),
                          nxgallery::MediaKind::Photo, index, 1});
     }
@@ -69,33 +70,183 @@ void grid_multi_select_flow() {
 
     controller.handle(nxgallery::Action::ToggleMultiSelect);
     assert(controller.multi_select_active());
-    for (int index = 0; index < 12; ++index) {
+    for (int index = 0; index < 25; ++index) {
         controller.select_media(static_cast<std::size_t>(index));
         controller.handle(nxgallery::Action::Confirm);
     }
-    assert(controller.selected_media_count() ==
-           nxgallery::GalleryController::kMaximumMultiSelect);
+    assert(controller.selected_media_count() == 25);
     assert(controller.is_media_selected(0));
-    assert(!controller.is_media_selected(10));
+    assert(controller.is_media_selected(24));
     controller.select_media(0);
     controller.handle(nxgallery::Action::Confirm);
     assert(!controller.is_media_selected(0));
-    assert(controller.selected_media_count() == 9);
+    assert(controller.selected_media_count() == 24);
 
     controller.handle(nxgallery::Action::Share);
     assert(controller.screen() == nxgallery::Screen::ChatPicker);
     controller.handle(nxgallery::Action::Back);
     assert(controller.screen() == nxgallery::Screen::Grid);
     assert(controller.multi_select_active());
-    assert(controller.selected_media_count() == 9);
+    assert(controller.selected_media_count() == 24);
     controller.handle(nxgallery::Action::Share);
     request = controller.handle(nxgallery::Action::Confirm);
-    assert(request && request->media.size() == 9);
+    assert(request && request->media.size() == 24);
+    for (std::size_t index = 0; index < request->media.size(); ++index) {
+        assert(request->media[index].filename == std::to_string(index + 1));
+    }
+    controller.finish_share(false, "Transfer cancelled");
+    controller.handle(nxgallery::Action::Confirm);
+    assert(controller.screen() == nxgallery::Screen::Grid);
+    assert(controller.multi_select_active());
+    assert(controller.selected_media_count() == 24);
+    controller.handle(nxgallery::Action::Share);
+    request = controller.handle(nxgallery::Action::Confirm);
+    assert(request && request->media.size() == 24);
     controller.finish_share(true, "Sent album");
     controller.handle(nxgallery::Action::Confirm);
     assert(controller.screen() == nxgallery::Screen::Grid);
     assert(!controller.multi_select_active());
     assert(controller.selected_media_count() == 0);
+}
+
+std::vector<nxgallery::MediaItem> batching_media(std::size_t count) {
+    std::vector<nxgallery::MediaItem> media;
+    media.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        media.push_back({std::to_string(index) + ".jpg", std::to_string(index),
+                         nxgallery::MediaKind::Photo,
+                         static_cast<std::int64_t>(index), index + 1});
+    }
+    return media;
+}
+
+void telegram_batching_flow() {
+    const auto media = batching_media(25);
+    std::vector<std::vector<std::string>> calls;
+    std::vector<std::uint64_t> progress_values;
+    std::vector<std::uint64_t> progress_totals;
+
+    const auto result = nxgallery::send_telegram_batches(
+        media,
+        [&](std::uint64_t current, std::uint64_t total) {
+            progress_values.push_back(current);
+            progress_totals.push_back(total);
+            return true;
+        },
+        [&](const nxgallery::MediaItem &item,
+            nxgallery::TelegramBot::TransferProgress progress) {
+            calls.push_back({item.filename});
+            assert(progress(item.size / 2, item.size));
+            assert(progress(item.size, item.size));
+            return nxgallery::BotResult{true, "sent"};
+        },
+        [&](const std::vector<nxgallery::MediaItem> &batch,
+            nxgallery::TelegramBot::TransferProgress progress) {
+            std::vector<std::string> names;
+            std::uint64_t bytes = 0;
+            for (const auto &item : batch) {
+                names.push_back(item.filename);
+                bytes += item.size;
+            }
+            calls.push_back(std::move(names));
+            assert(progress(bytes / 2, bytes));
+            assert(progress(bytes, bytes));
+            return nxgallery::BotResult{true, "sent"};
+        });
+
+    assert(result.success);
+    assert(calls.size() == 3);
+    assert(calls[0].size() == 10);
+    assert(calls[1].size() == 10);
+    assert(calls[2].size() == 5);
+    assert(calls[0].front() == "0" && calls[0].back() == "9");
+    assert(calls[1].front() == "10" && calls[1].back() == "19");
+    assert(calls[2].front() == "20" && calls[2].back() == "24");
+    assert(progress_values.size() == progress_totals.size());
+    assert(!progress_values.empty());
+    for (std::size_t index = 1; index < progress_values.size(); ++index) {
+        assert(progress_values[index] >= progress_values[index - 1]);
+        assert(progress_totals[index] == progress_totals[0]);
+    }
+    assert(progress_values.back() == progress_totals.back());
+}
+
+void telegram_batching_stops_on_failure() {
+    const auto media = batching_media(25);
+    int group_calls = 0;
+    int single_calls = 0;
+    const auto result = nxgallery::send_telegram_batches(
+        media, {},
+        [&](const nxgallery::MediaItem &,
+            nxgallery::TelegramBot::TransferProgress) {
+            ++single_calls;
+            return nxgallery::BotResult{true, "sent"};
+        },
+        [&](const std::vector<nxgallery::MediaItem> &batch,
+            nxgallery::TelegramBot::TransferProgress) {
+            assert(batch.size() == 10);
+            ++group_calls;
+            return nxgallery::BotResult{group_calls == 1,
+                                         group_calls == 1 ? "sent" : "failed"};
+        });
+    assert(!result.success);
+    assert(result.message == "Some captures were sent; remaining transfer failed");
+    assert(group_calls == 2);
+    assert(single_calls == 0);
+}
+
+void telegram_batching_uses_singleton_remainder() {
+    const auto media = batching_media(21);
+    int group_calls = 0;
+    int single_calls = 0;
+    const auto result = nxgallery::send_telegram_batches(
+        media, {},
+        [&](const nxgallery::MediaItem &item,
+            nxgallery::TelegramBot::TransferProgress) {
+            assert(item.filename == "20");
+            ++single_calls;
+            return nxgallery::BotResult{true, "sent"};
+        },
+        [&](const std::vector<nxgallery::MediaItem> &batch,
+            nxgallery::TelegramBot::TransferProgress) {
+            assert(batch.size() == 10);
+            ++group_calls;
+            return nxgallery::BotResult{true, "sent"};
+        });
+    assert(result.success);
+    assert(group_calls == 2);
+    assert(single_calls == 1);
+}
+
+void telegram_batching_stops_on_cancellation() {
+    const auto media = batching_media(21);
+    int group_calls = 0;
+    int single_calls = 0;
+    std::size_t progress_calls = 0;
+    const auto result = nxgallery::send_telegram_batches(
+        media,
+        [&](std::uint64_t, std::uint64_t) {
+            ++progress_calls;
+            return progress_calls < 3;
+        },
+        [&](const nxgallery::MediaItem &,
+            nxgallery::TelegramBot::TransferProgress) {
+            ++single_calls;
+            return nxgallery::BotResult{true, "sent"};
+        },
+        [&](const std::vector<nxgallery::MediaItem> &batch,
+            nxgallery::TelegramBot::TransferProgress progress) {
+            ++group_calls;
+            std::uint64_t bytes = 0;
+            for (const auto &item : batch) bytes += item.size;
+            assert(progress(bytes, bytes));
+            return nxgallery::BotResult{true, "sent"};
+        });
+    assert(!result.success);
+    assert(result.message ==
+           "Some captures were sent before transfer was cancelled");
+    assert(group_calls == 1);
+    assert(single_calls == 0);
 }
 
 void grid_boundaries() {
@@ -296,6 +447,10 @@ void release_version_contract() {
 int main() {
     controller_flow();
     grid_multi_select_flow();
+    telegram_batching_flow();
+    telegram_batching_stops_on_failure();
+    telegram_batching_uses_singleton_remainder();
+    telegram_batching_stops_on_cancellation();
     grid_boundaries();
     config_contract();
     serialize_contract();

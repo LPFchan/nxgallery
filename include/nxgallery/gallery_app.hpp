@@ -97,7 +97,7 @@ private:
     bool update_notice_active_{};
     std::string update_notice_;
     std::string installed_nro_path_;
-    std::array<std::uint32_t, 4> dir_hold_frames_{};
+    std::array<std::uint32_t, 8> dir_hold_frames_{};
     bool touch_down_{};
     std::int32_t touch_start_x_{};
     std::int32_t touch_start_y_{};

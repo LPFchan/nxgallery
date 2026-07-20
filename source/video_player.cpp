@@ -18,6 +18,7 @@ extern "C" {
 #include <condition_variable>
 #include <cstdio>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -40,6 +41,7 @@ struct VideoPlayer::Impl {
     std::atomic<std::uint64_t> decoded_frames{};
     std::atomic<std::uint64_t> playback_position_ms{};
     std::atomic<std::uint64_t> playback_duration_ms{};
+    std::atomic<std::int64_t> pending_seek_delta_ms{};
     std::atomic<SDL_AudioDeviceID> audio_device{0};
     mutable std::mutex mutex;
     std::condition_variable wake;
@@ -59,7 +61,7 @@ struct VideoPlayer::Impl {
     void queue_audio(AVCodecContext *audio_codec, SwrContext *resampler,
                      AVFrame *audio_frame) {
         const SDL_AudioDeviceID device = audio_device.load();
-        while (!stop_requested &&
+        while (!stop_requested && pending_seek_delta_ms.load() == 0 &&
                avcodec_receive_frame(audio_codec, audio_frame) >= 0) {
             const int capacity = swr_get_out_samples(resampler,
                                                      audio_frame->nb_samples);
@@ -243,12 +245,81 @@ struct VideoPlayer::Impl {
         if (seconds_per_frame <= 0.0 || seconds_per_frame > 1.0) seconds_per_frame = 1.0 / 30.0;
         auto playback_origin = std::chrono::steady_clock::now();
         std::uint64_t last_position_ms = 0;
+        std::uint64_t discard_video_before_ms = 0;
+        bool discarding_seek_preroll = false;
         decoded_frames = 0;
         std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=%d height=%d nominal_fps_milli=%u pacing=timestamp\n",
                     codec->width, codec->height,
                     static_cast<unsigned int>(1000.0 / seconds_per_frame));
 
-        while (!stop_requested && av_read_frame(format, packet) >= 0) {
+        bool reached_end = false;
+        while (!stop_requested && !reached_end) {
+            const std::int64_t seek_delta_ms = pending_seek_delta_ms.exchange(0);
+            if (seek_delta_ms != 0) {
+                const std::uint64_t current_ms = playback_position_ms.load();
+                const std::uint64_t duration = playback_duration_ms.load();
+                const std::uint64_t maximum_ms = duration > 0
+                    ? std::min(duration, static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()))
+                    : static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max());
+                std::uint64_t target_ms = current_ms;
+                if (seek_delta_ms < 0) {
+                    const std::uint64_t magnitude = static_cast<std::uint64_t>(
+                        -(seek_delta_ms + 1)) + 1U;
+                    target_ms = magnitude >= current_ms ? 0U : current_ms - magnitude;
+                } else {
+                    const std::uint64_t magnitude =
+                        static_cast<std::uint64_t>(seek_delta_ms);
+                    target_ms = magnitude > maximum_ms - std::min(current_ms, maximum_ms)
+                        ? maximum_ms : current_ms + magnitude;
+                    target_ms = std::min(target_ms, maximum_ms);
+                }
+                const std::int64_t target_timestamp = stream_start + av_rescale_q(
+                    static_cast<std::int64_t>(target_ms),
+                    AVRational{1, 1000}, stream->time_base);
+                const int seek_result = av_seek_frame(
+                    format, stream_index, target_timestamp, AVSEEK_FLAG_BACKWARD);
+                if (seek_result >= 0) {
+                    avcodec_flush_buffers(codec);
+                    if (audio_codec != nullptr) avcodec_flush_buffers(audio_codec);
+                    if (resampler != nullptr) {
+                        swr_close(resampler);
+                        swr_init(resampler);
+                    }
+                    const SDL_AudioDeviceID device = audio_device.load();
+                    if (device != 0) SDL_ClearQueuedAudio(device);
+                    av_packet_unref(packet);
+                    playback_position_ms = target_ms;
+                    last_position_ms = target_ms;
+                    discard_video_before_ms = target_ms;
+                    discarding_seek_preroll = true;
+                    playback_origin = std::chrono::steady_clock::now() -
+                        std::chrono::milliseconds(target_ms);
+                    std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=seeked from_ms=%llu target_ms=%llu delta_ms=%lld\n",
+                                static_cast<unsigned long long>(current_ms),
+                                static_cast<unsigned long long>(target_ms),
+                                static_cast<long long>(seek_delta_ms));
+                } else {
+                    char ffmpeg_error[AV_ERROR_MAX_STRING_SIZE]{};
+                    av_strerror(seek_result, ffmpeg_error, sizeof(ffmpeg_error));
+                    std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=seek_failed target_ms=%llu code=%d reason=%s\n",
+                                static_cast<unsigned long long>(target_ms),
+                                seek_result, ffmpeg_error);
+                }
+            }
+
+            if (av_read_frame(format, packet) < 0) {
+                if (pending_seek_delta_ms.load() != 0) continue;
+                while (!stop_requested && !is_paused &&
+                       pending_seek_delta_ms.load() == 0 &&
+                       audio_device.load() != 0 &&
+                       SDL_GetQueuedAudioSize(audio_device.load()) > 0) {
+                    SDL_Delay(30);
+                }
+                reached_end = pending_seek_delta_ms.load() == 0;
+                continue;
+            }
             if (packet->stream_index == stream_index &&
                 avcodec_send_packet(codec, packet) >= 0) {
                 while (!stop_requested && avcodec_receive_frame(codec, frame) >= 0) {
@@ -261,6 +332,15 @@ struct VideoPlayer::Impl {
                             stream->time_base, AVRational{1, 1000});
                         frame_position_ms = static_cast<std::uint64_t>(elapsed_ms);
                     }
+                    if (discarding_seek_preroll &&
+                        frame_position_ms < discard_video_before_ms) {
+                        continue;
+                    }
+                    if (discarding_seek_preroll) {
+                        discarding_seek_preroll = false;
+                        playback_origin = std::chrono::steady_clock::now() -
+                            std::chrono::milliseconds(frame_position_ms);
+                    }
                     frame_position_ms = std::max(last_position_ms, frame_position_ms);
                     if (playback_duration_ms > 0) {
                         frame_position_ms = std::min(frame_position_ms,
@@ -270,19 +350,25 @@ struct VideoPlayer::Impl {
                         std::unique_lock<std::mutex> lock(mutex);
                         if (is_paused) {
                             const auto pause_started = std::chrono::steady_clock::now();
-                            wake.wait(lock, [this] { return stop_requested || !is_paused; });
+                            wake.wait(lock, [this] {
+                                return stop_requested || !is_paused ||
+                                    pending_seek_delta_ms.load() != 0;
+                            });
                             if (!stop_requested) {
                                 playback_origin += std::chrono::steady_clock::now() - pause_started;
                             }
+                            if (pending_seek_delta_ms.load() != 0) break;
                             continue;
                         }
                         const auto target = playback_origin +
                             std::chrono::milliseconds(frame_position_ms);
                         if (!wake.wait_until(lock, target, [this] {
-                                return stop_requested || is_paused;
+                                return stop_requested || is_paused ||
+                                    pending_seek_delta_ms.load() != 0;
                             })) break;
+                        if (pending_seek_delta_ms.load() != 0) break;
                     }
-                    if (stop_requested) break;
+                    if (stop_requested || pending_seek_delta_ms.load() != 0) break;
                     const std::size_t stride = static_cast<std::size_t>(codec->width) * 4U;
                     std::vector<std::uint8_t> pixels(
                         stride * static_cast<std::size_t>(codec->height));
@@ -304,19 +390,12 @@ struct VideoPlayer::Impl {
                         std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame\n");
                     }
                 }
-            } else if (audio_device.load() != 0 &&
+            } else if (!discarding_seek_preroll && audio_device.load() != 0 &&
                        packet->stream_index == audio_index &&
                        avcodec_send_packet(audio_codec, packet) >= 0) {
                 queue_audio(audio_codec, resampler, audio_frame);
             }
             av_packet_unref(packet);
-        }
-        if (!stop_requested) {
-            // Let the queued audio tail play out before tearing the device down.
-            while (!stop_requested && !is_paused && audio_device.load() != 0 &&
-                   SDL_GetQueuedAudioSize(audio_device.load()) > 0) {
-                SDL_Delay(30);
-            }
         }
         if (!stop_requested) {
             if (playback_duration_ms > 0) playback_position_ms = playback_duration_ms.load();
@@ -357,6 +436,24 @@ void VideoPlayer::toggle_pause() {
     impl_->wake.notify_all();
 }
 
+void VideoPlayer::seek_relative(std::int64_t delta_ms) {
+    if (delta_ms == 0 || !impl_->is_active || impl_->is_paused) return;
+    std::int64_t pending = impl_->pending_seek_delta_ms.load();
+    while (true) {
+        std::int64_t combined = 0;
+        if (delta_ms > 0 && pending >
+            std::numeric_limits<std::int64_t>::max() - delta_ms) {
+            combined = std::numeric_limits<std::int64_t>::max();
+        } else if (delta_ms < 0 && pending <
+                   std::numeric_limits<std::int64_t>::min() - delta_ms) {
+            combined = std::numeric_limits<std::int64_t>::min();
+        }
+        else combined = pending + delta_ms;
+        if (impl_->pending_seek_delta_ms.compare_exchange_weak(pending, combined)) break;
+    }
+    impl_->wake.notify_all();
+}
+
 void VideoPlayer::stop() {
     impl_->stop_requested = true;
     impl_->is_paused = false;
@@ -367,6 +464,7 @@ void VideoPlayer::stop() {
     impl_->decoded_frames = 0;
     impl_->playback_position_ms = 0;
     impl_->playback_duration_ms = 0;
+    impl_->pending_seek_delta_ms = 0;
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->pending_pixels.clear();
     impl_->pending_width = 0;

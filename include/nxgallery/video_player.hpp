@@ -20,6 +20,7 @@ public:
 
     void play(const MediaItem &media);
     void toggle_pause();
+    void seek_relative(std::int64_t delta_ms);
     void stop();
     void update_texture();
 
