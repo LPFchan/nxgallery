@@ -387,6 +387,9 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
             return {false, body.overflow ? "Telegram response exceeded its size limit" :
                 "Telegram upload failed: " + std::string(curl_easy_strerror(code))};
         }
+        if (response_code == 413) {
+            return {false, "Telegram rejected an oversized upload request"};
+        }
         JsonOwner root(nullptr, json_object_put);
         json_object *result = nullptr;
         if (!api_result(body.bytes, root, result, error)) {
@@ -528,6 +531,9 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
         if (code != CURLE_OK || body.overflow) {
             return {false, body.overflow ? "Telegram response exceeded its size limit" :
                 "Telegram album upload failed: " + std::string(curl_easy_strerror(code))};
+        }
+        if (response_code == 413) {
+            return {false, "Telegram rejected an oversized upload request"};
         }
         JsonOwner root(nullptr, json_object_put);
         json_object *result = nullptr;

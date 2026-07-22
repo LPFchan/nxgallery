@@ -41,6 +41,7 @@ void controller_flow() {
     assert(request.has_value());
     assert(request->media.size() == 1);
     assert(request->media.front().kind == nxgallery::MediaKind::Video);
+    assert(request->media.front().filename == "b.mp4");
     assert(request->chat.id == 1);
     assert(controller.screen() == nxgallery::Screen::Sending);
     controller.finish_share(true, "Sent");
@@ -55,7 +56,7 @@ void grid_multi_select_flow() {
     std::vector<nxgallery::MediaItem> media;
     for (int index = 0; index < 25; ++index) {
         media.push_back({std::to_string(index) + ".jpg", std::to_string(index),
-                         nxgallery::MediaKind::Photo, index, 1});
+                         nxgallery::MediaKind::Photo, 25 - index, 1});
     }
     controller.set_media(std::move(media));
     controller.set_chats({{42, "Saved", "private"}});
@@ -64,6 +65,7 @@ void grid_multi_select_flow() {
     assert(controller.screen() == nxgallery::Screen::ChatPicker);
     auto request = controller.handle(nxgallery::Action::Confirm);
     assert(request && request->media.size() == 1);
+    assert(request->media.front().filename == "0");
     controller.finish_share(true, "Sent");
     controller.handle(nxgallery::Action::Confirm);
     assert(controller.screen() == nxgallery::Screen::Grid);
@@ -92,7 +94,7 @@ void grid_multi_select_flow() {
     request = controller.handle(nxgallery::Action::Confirm);
     assert(request && request->media.size() == 24);
     for (std::size_t index = 0; index < request->media.size(); ++index) {
-        assert(request->media[index].filename == std::to_string(index + 1));
+        assert(request->media[index].filename == std::to_string(24 - index));
     }
     controller.finish_share(false, "Transfer cancelled");
     controller.handle(nxgallery::Action::Confirm);
@@ -216,6 +218,62 @@ void telegram_batching_uses_singleton_remainder() {
     assert(result.success);
     assert(group_calls == 2);
     assert(single_calls == 1);
+}
+
+void telegram_batching_splits_by_request_size() {
+    constexpr std::uint64_t mebibyte = 1024U * 1024U;
+    std::vector<nxgallery::MediaItem> media{
+        {"0.mp4", "0", nxgallery::MediaKind::Video, 0, 20U * mebibyte},
+        {"1.mp4", "1", nxgallery::MediaKind::Video, 1, 20U * mebibyte},
+        {"2.mp4", "2", nxgallery::MediaKind::Video, 2, 20U * mebibyte},
+        {"3.mp4", "3", nxgallery::MediaKind::Video, 3, 50U * mebibyte},
+        {"4.jpg", "4", nxgallery::MediaKind::Photo, 4, mebibyte},
+        {"5.jpg", "5", nxgallery::MediaKind::Photo, 5, mebibyte},
+    };
+    std::vector<std::vector<std::string>> calls;
+    std::vector<std::uint64_t> progress_values;
+    std::vector<std::uint64_t> progress_totals;
+
+    const auto result = nxgallery::send_telegram_batches(
+        media,
+        [&](std::uint64_t current, std::uint64_t total) {
+            progress_values.push_back(current);
+            progress_totals.push_back(total);
+            return true;
+        },
+        [&](const nxgallery::MediaItem &item,
+            nxgallery::TelegramBot::TransferProgress progress) {
+            calls.push_back({item.filename});
+            assert(progress(item.size, item.size));
+            return nxgallery::BotResult{true, "sent"};
+        },
+        [&](const std::vector<nxgallery::MediaItem> &batch,
+            nxgallery::TelegramBot::TransferProgress progress) {
+            std::vector<std::string> names;
+            std::uint64_t bytes = 0;
+            for (const auto &item : batch) {
+                names.push_back(item.filename);
+                bytes += item.size;
+            }
+            calls.push_back(std::move(names));
+            assert(bytes <= nxgallery::kMaximumTelegramRequestMediaBytes);
+            assert(progress(bytes, bytes));
+            return nxgallery::BotResult{true, "sent"};
+        });
+
+    assert(result.success);
+    assert(calls.size() == 4);
+    assert((calls[0] == std::vector<std::string>{"0", "1"}));
+    assert((calls[1] == std::vector<std::string>{"2"}));
+    assert((calls[2] == std::vector<std::string>{"3"}));
+    assert((calls[3] == std::vector<std::string>{"4", "5"}));
+    assert(progress_values.size() == progress_totals.size());
+    assert(!progress_values.empty());
+    for (std::size_t index = 1; index < progress_values.size(); ++index) {
+        assert(progress_values[index] >= progress_values[index - 1]);
+        assert(progress_totals[index] == progress_totals[0]);
+    }
+    assert(progress_values.back() == progress_totals.back());
 }
 
 void telegram_batching_stops_on_cancellation() {
@@ -450,6 +508,7 @@ int main() {
     telegram_batching_flow();
     telegram_batching_stops_on_failure();
     telegram_batching_uses_singleton_remainder();
+    telegram_batching_splits_by_request_size();
     telegram_batching_stops_on_cancellation();
     grid_boundaries();
     config_contract();

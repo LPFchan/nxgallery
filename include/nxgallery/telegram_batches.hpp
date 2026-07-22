@@ -9,6 +9,9 @@
 namespace nxgallery {
 
 constexpr std::size_t kMaximumTelegramBatchItems = 10;
+// Leave multipart metadata headroom below Telegram's roughly 50 MiB request limit.
+constexpr std::uint64_t kMaximumTelegramRequestMediaBytes =
+    48U * 1024U * 1024U;
 
 using TelegramSingleSender = std::function<BotResult(
     const MediaItem &, TelegramBot::TransferProgress)>;

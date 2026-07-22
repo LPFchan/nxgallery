@@ -42,11 +42,21 @@ BotResult send_telegram_batches_impl(
 
     if (!report(0)) return {false, "Transfer cancelled"};
 
-    for (std::size_t begin = 0; begin < media.size();
-         begin += kMaximumTelegramBatchItems) {
-        const std::size_t end = std::min(
-            begin + kMaximumTelegramBatchItems, media.size());
-        const std::uint64_t batch_bytes = media_bytes(media, begin, end);
+    for (std::size_t begin = 0; begin < media.size();) {
+        std::size_t end = begin;
+        std::uint64_t batch_bytes = 0;
+        while (end < media.size() &&
+               end - begin < kMaximumTelegramBatchItems) {
+            const std::uint64_t item_bytes = media[end].size;
+            if (end != begin &&
+                (batch_bytes > kMaximumTelegramRequestMediaBytes ||
+                 item_bytes > kMaximumTelegramRequestMediaBytes - batch_bytes)) {
+                break;
+            }
+            batch_bytes += item_bytes;
+            ++end;
+            if (batch_bytes > kMaximumTelegramRequestMediaBytes) break;
+        }
         auto batch_progress = [&](std::uint64_t current, std::uint64_t total) {
             std::uint64_t scaled = 0;
             if (total > 0) {
@@ -79,6 +89,7 @@ BotResult send_telegram_batches_impl(
         if (!report(completed_bytes)) {
             return {false, "Some captures were sent before transfer was cancelled"};
         }
+        begin = end;
     }
 
     return {true, media.size() == 1

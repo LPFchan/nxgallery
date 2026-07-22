@@ -61,7 +61,9 @@ std::vector<MediaItem> GalleryController::media_for_share() const {
     if (media_.empty()) return selected;
     if (share_origin_ == Screen::Grid && multi_select_active_) {
         selected.reserve(selected_media_indices_.size());
-        for (const std::size_t index : selected_media_indices_) {
+        for (auto position = selected_media_indices_.rbegin();
+             position != selected_media_indices_.rend(); ++position) {
+            const std::size_t index = *position;
             if (index < media_.size()) selected.push_back(media_[index]);
         }
     } else {
