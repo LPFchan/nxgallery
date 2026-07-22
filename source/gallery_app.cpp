@@ -1945,8 +1945,8 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
     if (controller_.screen() == Screen::Grid) {
         if (group_by_date_) {
             const GroupedGridLayout layout = grouped_grid_layout(controller_.media());
-            if (touch.y < static_cast<u32>(kGridY) ||
-                touch.y >= static_cast<u32>(kFooterRuleY)) return;
+            const std::int32_t touch_y = static_cast<std::int32_t>(touch.y);
+            if (touch_y < kGridY || touch_y >= kFooterRuleY) return;
             const std::int32_t scroll_y = rounded_grouped_scroll(grouped_scroll_y_);
             for (const GroupedItemPosition &item : layout.items) {
                 const std::int32_t y = grouped_screen_y(item.virtual_y, scroll_y);
@@ -2202,11 +2202,12 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             dir_hold_frames_[index] = 0;
         }
     }
-    const std::uint64_t dpad_horizontal_fire = direction_fire &
-        (HidNpadButton_Left | HidNpadButton_Right);
+    const std::uint64_t viewer_browse_fire = direction_fire &
+        (HidNpadButton_Left | HidNpadButton_Right |
+         HidNpadButton_StickLLeft | HidNpadButton_StickLRight);
     const std::uint64_t raw_right_stick_horizontal = (down | held) &
         (HidNpadButton_StickRLeft | HidNpadButton_StickRRight);
-    const std::uint64_t any_horizontal_fire = direction_fire &
+    std::uint64_t horizontal_navigation_fire = direction_fire &
         (HidNpadButton_Left | HidNpadButton_Right |
          HidNpadButton_StickLLeft | HidNpadButton_StickLRight |
          HidNpadButton_StickRLeft | HidNpadButton_StickRRight);
@@ -2257,7 +2258,7 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         const std::int32_t scrub_direction = scrub_left == scrub_right ? 0 :
             (scrub_left ? -1 : 1);
         if ((down & HidNpadButton_A) != 0) {
-            if ((down & HidNpadButton_B) == 0 && dpad_horizontal_fire == 0 &&
+            if ((down & HidNpadButton_B) == 0 && viewer_browse_fire == 0 &&
                 scrub_direction_ != 0 && scrub_direction != scrub_direction_) {
                 commit_video_scrub();
             }
@@ -2265,7 +2266,7 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             return;
         }
         if ((down & HidNpadButton_B) != 0 ||
-            dpad_horizontal_fire != 0) {
+            viewer_browse_fire != 0) {
             cancel_video_scrub();
             video_player_->stop();
         } else {
@@ -2278,10 +2279,8 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
             }
             if (raw_right_stick_horizontal != 0) return;
         }
-        if (dpad_horizontal_fire == 0 &&
-            (any_horizontal_fire &
-             (HidNpadButton_StickLLeft | HidNpadButton_StickLRight)) != 0) {
-            return;
+        if (viewer_browse_fire != 0) {
+            horizontal_navigation_fire = viewer_browse_fire;
         }
     }
     if ((down & HidNpadButton_X) != 0 &&
@@ -2303,12 +2302,12 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     std::optional<ShareRequest> request;
     if ((down & HidNpadButton_A) != 0) request = controller_.handle(Action::Confirm);
     else if ((down & HidNpadButton_B) != 0) controller_.handle(Action::Back);
-    else if ((any_horizontal_fire &
+    else if ((horizontal_navigation_fire &
               (HidNpadButton_Left | HidNpadButton_StickLLeft |
                HidNpadButton_StickRLeft)) != 0) {
         if (!move_grouped_grid(Action::Left)) controller_.handle(Action::Left);
     }
-    else if ((any_horizontal_fire &
+    else if ((horizontal_navigation_fire &
               (HidNpadButton_Right | HidNpadButton_StickLRight |
                HidNpadButton_StickRRight)) != 0) {
         if (!move_grouped_grid(Action::Right)) controller_.handle(Action::Right);
