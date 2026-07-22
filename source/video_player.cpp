@@ -32,9 +32,12 @@ namespace nxgallery {
 namespace {
 
 constexpr std::uint64_t kAudioPrimeTargetMs = 160;
-constexpr std::size_t kAudioPrimeMaximumVideoPackets = 240;
-constexpr std::size_t kAudioPrimeMaximumVideoBytes = 8U * 1024U * 1024U;
+constexpr std::uint64_t kAudioQueueLowWatermarkMs = 200;
+constexpr std::uint64_t kAudioQueueHighWatermarkMs = 400;
 constexpr std::size_t kAudioPrimeMaximumScannedPackets = 2048;
+constexpr std::size_t kMaximumDecodedVideoFrames = 3;
+constexpr std::size_t kMaximumQueuedVideoPackets = 120;
+constexpr std::size_t kMaximumQueuedVideoBytes = 4U * 1024U * 1024U;
 
 }  // namespace
 
@@ -152,16 +155,18 @@ struct VideoPlayer::Impl {
         AVFrame *audio_frame = nullptr;
         AVStream *audio_stream = nullptr;
         SDL_AudioSpec obtained_audio{};
-        std::deque<AVPacket *> primed_video_packets;
-        auto clear_primed_video_packets = [&] {
-            while (!primed_video_packets.empty()) {
-                AVPacket *saved = primed_video_packets.front();
-                primed_video_packets.pop_front();
+        std::deque<AVPacket *> video_packets;
+        std::size_t queued_video_packet_bytes = 0;
+        auto clear_video_packets = [&] {
+            while (!video_packets.empty()) {
+                AVPacket *saved = video_packets.front();
+                video_packets.pop_front();
                 av_packet_free(&saved);
             }
+            queued_video_packet_bytes = 0;
         };
         auto finish = [&] {
-            clear_primed_video_packets();
+            clear_video_packets();
             audio_primed = false;
             const SDL_AudioDeviceID device = audio_device.exchange(0);
             if (device != 0) {
@@ -319,18 +324,61 @@ struct VideoPlayer::Impl {
         double seconds_per_frame = frame_rate.num > 0 && frame_rate.den > 0
             ? static_cast<double>(frame_rate.den) / frame_rate.num : 1.0 / 30.0;
         if (seconds_per_frame <= 0.0 || seconds_per_frame > 1.0) seconds_per_frame = 1.0 / 30.0;
+        struct DecodedVideoFrame {
+            std::vector<std::uint8_t> pixels;
+            std::uint64_t pts_ms{};
+            int width{};
+            int height{};
+        };
+        std::deque<DecodedVideoFrame> video_frames;
         auto playback_origin = std::chrono::steady_clock::now();
-        std::uint64_t last_position_ms = 0;
         std::uint64_t discard_video_before_ms = 0;
         bool discarding_seek_preroll = false;
         bool audio_started = false;
-        bool audio_queue_underrun_reported = false;
+        bool audio_queue_underrun_active = false;
         bool first_video_after_prime = false;
+        bool first_frame_presented = false;
+        bool refilling_audio = false;
+        std::uint64_t total_audio_bytes_queued = 0;
+        std::uint64_t dropped_video_frames = 0;
+        std::uint64_t dropped_video_packets = 0;
+        std::uint64_t presented_video_frames = 0;
+        std::uint64_t fallback_video_pts_ms = 0;
+        std::uint64_t next_audio_clock_report_ms = 1000;
         const std::int64_t video_start_us = av_rescale_q(
             stream_start, stream->time_base, AV_TIME_BASE_Q);
         std::optional<std::int64_t> first_video_pts_ms;
         std::optional<std::int64_t> first_audio_pts_ms;
         std::int64_t fallback_audio_pts_ms = 0;
+        const std::uint64_t audio_bytes_per_second =
+            obtained_audio.freq > 0 && obtained_audio.channels > 0 ?
+            static_cast<std::uint64_t>(obtained_audio.freq) *
+                static_cast<std::uint64_t>(obtained_audio.channels) *
+                static_cast<std::uint64_t>(SDL_AUDIO_BITSIZE(obtained_audio.format) / 8U) : 0U;
+
+        auto queued_audio_bytes = [&]() -> std::uint64_t {
+            const SDL_AudioDeviceID device = audio_device.load();
+            return device != 0 ? SDL_GetQueuedAudioSize(device) : 0U;
+        };
+        auto audio_bytes_to_ms = [&](std::uint64_t bytes) -> std::uint64_t {
+            return audio_bytes_per_second > 0 ? bytes * 1000U / audio_bytes_per_second : 0U;
+        };
+        auto queued_audio_ms = [&]() -> std::uint64_t {
+            return audio_bytes_to_ms(queued_audio_bytes());
+        };
+        auto audio_clock_ms = [&]() -> std::uint64_t {
+            if (!audio_started || !first_audio_pts_ms || audio_bytes_per_second == 0) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - playback_origin).count();
+                return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0U;
+            }
+            const std::uint64_t queued = queued_audio_bytes();
+            const std::uint64_t played = total_audio_bytes_queued > queued ?
+                total_audio_bytes_queued - queued : 0U;
+            const std::int64_t clock = *first_audio_pts_ms +
+                static_cast<std::int64_t>(audio_bytes_to_ms(played));
+            return clock > 0 ? static_cast<std::uint64_t>(clock) : 0U;
+        };
 
         auto packet_video_pts_ms = [&](const AVPacket *value)
                 -> std::optional<std::int64_t> {
@@ -341,12 +389,111 @@ struct VideoPlayer::Impl {
                                 AVRational{1, 1000});
         };
 
+        auto enqueue_video_packet = [&](const AVPacket *value) {
+            const std::size_t packet_bytes = value->size > 0 ?
+                static_cast<std::size_t>(value->size) : 0U;
+            if (video_packets.size() >= kMaximumQueuedVideoPackets ||
+                packet_bytes > kMaximumQueuedVideoBytes -
+                    std::min(queued_video_packet_bytes, kMaximumQueuedVideoBytes)) {
+                ++dropped_video_packets;
+                return;
+            }
+            AVPacket *saved = av_packet_clone(value);
+            if (saved == nullptr) {
+                ++dropped_video_packets;
+                return;
+            }
+            video_packets.push_back(saved);
+            queued_video_packet_bytes += packet_bytes;
+        };
+
+        auto decode_video_packet = [&](AVPacket *value) {
+            if (avcodec_send_packet(codec, value) < 0) return;
+            while (!stop_requested && pending_seek_delta_ms.load() == 0 &&
+                   avcodec_receive_frame(codec, frame) >= 0) {
+                const std::uint64_t frame_number = decoded_frames.load() + 1U;
+                std::uint64_t frame_position_ms = fallback_video_pts_ms;
+                if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+                    const std::int64_t elapsed_ms = av_rescale_q(
+                        std::max<std::int64_t>(0, frame->best_effort_timestamp - stream_start),
+                        stream->time_base, AVRational{1, 1000});
+                    frame_position_ms = static_cast<std::uint64_t>(elapsed_ms);
+                }
+                fallback_video_pts_ms = frame_position_ms +
+                    static_cast<std::uint64_t>(seconds_per_frame * 1000.0);
+                decoded_frames = frame_number;
+                if (discarding_seek_preroll && frame_position_ms < discard_video_before_ms) {
+                    continue;
+                }
+                if (discarding_seek_preroll) discarding_seek_preroll = false;
+                if (playback_duration_ms > 0) {
+                    frame_position_ms = std::min(frame_position_ms,
+                                                 playback_duration_ms.load());
+                }
+                if (video_frames.size() >= kMaximumDecodedVideoFrames) {
+                    ++dropped_video_frames;
+                    continue;
+                }
+                const std::size_t stride = static_cast<std::size_t>(codec->width) * 4U;
+                DecodedVideoFrame decoded;
+                decoded.pixels.resize(stride * static_cast<std::size_t>(codec->height));
+                decoded.pts_ms = frame_position_ms;
+                decoded.width = codec->width;
+                decoded.height = codec->height;
+                std::uint8_t *outputs[] = {decoded.pixels.data(), nullptr, nullptr, nullptr};
+                int output_strides[] = {static_cast<int>(stride), 0, 0, 0};
+                sws_scale(scaler, frame->data, frame->linesize, 0, codec->height,
+                          outputs, output_strides);
+                video_frames.push_back(std::move(decoded));
+            }
+        };
+
+        auto present_due_video = [&](std::uint64_t clock_ms, bool force_last) {
+            std::optional<DecodedVideoFrame> selected;
+            while (!video_frames.empty() &&
+                   (force_last || video_frames.front().pts_ms <= clock_ms)) {
+                if (selected) ++dropped_video_frames;
+                selected = std::move(video_frames.front());
+                video_frames.pop_front();
+            }
+            if (!selected) return;
+            const std::uint64_t frame_pts_ms = selected->pts_ms;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                pending_pixels = std::move(selected->pixels);
+                pending_width = selected->width;
+                pending_height = selected->height;
+                pending_frame = true;
+            }
+            ++presented_video_frames;
+            playback_position_ms = frame_pts_ms;
+            if (first_video_after_prime) {
+                first_video_after_prime = false;
+                std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=video_sync_start video_pts_ms=%llu audio_pts_ms=%lld audio_clock_ms=%llu\n",
+                            static_cast<unsigned long long>(frame_pts_ms),
+                            static_cast<long long>(first_audio_pts_ms.value_or(-1)),
+                            static_cast<unsigned long long>(clock_ms));
+            }
+            if (!first_frame_presented) {
+                first_frame_presented = true;
+                std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame video_pts_ms=%llu audio_clock_ms=%llu queued_ms=%llu\n",
+                            static_cast<unsigned long long>(frame_pts_ms),
+                            static_cast<unsigned long long>(clock_ms),
+                            static_cast<unsigned long long>(queued_audio_ms()));
+            }
+        };
+
         auto prime_audio = [&](std::uint64_t target_ms) {
-            clear_primed_video_packets();
+            clear_video_packets();
+            video_frames.clear();
             first_video_pts_ms.reset();
             first_audio_pts_ms.reset();
             fallback_audio_pts_ms = static_cast<std::int64_t>(target_ms);
-            audio_queue_underrun_reported = false;
+            fallback_video_pts_ms = target_ms;
+            total_audio_bytes_queued = 0;
+            audio_queue_underrun_active = false;
+            refilling_audio = false;
+            next_audio_clock_report_ms = target_ms + 1000U;
             first_video_after_prime = true;
             const SDL_AudioDeviceID device = audio_device.load();
             if (device == 0 || audio_codec == nullptr || audio_stream == nullptr) {
@@ -362,41 +509,23 @@ struct VideoPlayer::Impl {
             audio_primed = false;
             const auto prime_started = std::chrono::steady_clock::now();
             std::optional<std::uint64_t> first_audio_delay_ms;
-            std::size_t retained_video_bytes = 0;
             std::size_t scanned_packets = 0;
-            bool retention_limit_reported = false;
 
             while (!stop_requested && pending_seek_delta_ms.load() == 0 &&
                    scanned_packets < kAudioPrimeMaximumScannedPackets) {
-                const std::uint64_t queued_ms =
-                    static_cast<std::uint64_t>(SDL_GetQueuedAudioSize(device)) * 1000U /
-                    (static_cast<std::uint64_t>(audio_codec->sample_rate) * 4U);
-                if (queued_ms >= kAudioPrimeTargetMs) break;
+                if (queued_audio_ms() >= kAudioPrimeTargetMs) break;
                 if (av_read_frame(format, packet) < 0) break;
                 ++scanned_packets;
                 if (packet->stream_index == stream_index) {
                     if (!first_video_pts_ms) first_video_pts_ms = packet_video_pts_ms(packet);
-                    const std::size_t packet_bytes = packet->size > 0 ?
-                        static_cast<std::size_t>(packet->size) : 0U;
-                    if (primed_video_packets.size() < kAudioPrimeMaximumVideoPackets &&
-                        packet_bytes <= kAudioPrimeMaximumVideoBytes -
-                            std::min(retained_video_bytes, kAudioPrimeMaximumVideoBytes)) {
-                        AVPacket *saved = av_packet_clone(packet);
-                        if (saved != nullptr) {
-                            primed_video_packets.push_back(saved);
-                            retained_video_bytes += packet_bytes;
-                        }
-                    } else if (!retention_limit_reported) {
-                        retention_limit_reported = true;
-                        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_prime_video_limit packets=%zu bytes=%zu\n",
-                                    primed_video_packets.size(), retained_video_bytes);
-                    }
+                    enqueue_video_packet(packet);
                 } else if (packet->stream_index == audio_index &&
                            avcodec_send_packet(audio_codec, packet) >= 0) {
                     const std::uint64_t bytes = queue_audio(
                         audio_codec, resampler, audio_frame, audio_stream,
                         video_start_us, target_ms, first_audio_pts_ms,
                         fallback_audio_pts_ms);
+                    total_audio_bytes_queued += bytes;
                     if (bytes > 0 && !first_audio_delay_ms) {
                         first_audio_delay_ms = static_cast<std::uint64_t>(
                             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -407,13 +536,13 @@ struct VideoPlayer::Impl {
             }
             av_packet_unref(packet);
             if (stop_requested || pending_seek_delta_ms.load() != 0) {
-                clear_primed_video_packets();
+                clear_video_packets();
+                video_frames.clear();
                 return false;
             }
 
-            const std::uint64_t queued_bytes = SDL_GetQueuedAudioSize(device);
-            const std::uint64_t queued_ms = queued_bytes * 1000U /
-                (static_cast<std::uint64_t>(audio_codec->sample_rate) * 4U);
+            const std::uint64_t queued_bytes = queued_audio_bytes();
+            const std::uint64_t queued_ms = queued_audio_ms();
             if (queued_bytes == 0 || !first_audio_pts_ms) {
                 playback_origin = std::chrono::steady_clock::now() -
                     std::chrono::milliseconds(target_ms);
@@ -430,13 +559,14 @@ struct VideoPlayer::Impl {
             audio_started = true;
             audio_primed = true;
             SDL_PauseAudioDevice(device, is_paused ? 1 : 0);
-            std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_primed target_ms=%llu first_video_pts_ms=%lld first_audio_pts_ms=%lld queued_ms=%llu first_audio_delay_ms=%llu retained_video_packets=%zu alignment_ms=%lld\n",
+            std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_primed target_ms=%llu first_video_pts_ms=%lld first_audio_pts_ms=%lld queued_ms=%llu first_audio_delay_ms=%llu queued_video_packets=%zu queued_video_bytes=%zu alignment_ms=%lld\n",
                         static_cast<unsigned long long>(target_ms),
                         static_cast<long long>(first_video_pts_ms.value_or(-1)),
                         static_cast<long long>(*first_audio_pts_ms),
                         static_cast<unsigned long long>(queued_ms),
                         static_cast<unsigned long long>(first_audio_delay_ms.value_or(0)),
-                        primed_video_packets.size(),
+                        video_packets.size(),
+                        queued_video_packet_bytes,
                         static_cast<long long>(
                             first_video_pts_ms.value_or(*first_audio_pts_ms) -
                             *first_audio_pts_ms));
@@ -444,9 +574,16 @@ struct VideoPlayer::Impl {
         };
 
         decoded_frames = 0;
-        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=%d height=%d nominal_fps_milli=%u pacing=timestamp\n",
+        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=decoder_ready width=%d height=%d nominal_fps_milli=%u pacing=%s audio_low_ms=%llu audio_high_ms=%llu video_frame_limit=%zu video_packet_limit=%zu video_packet_bytes_limit=%zu audio_bytes_per_second=%llu\n",
                     codec->width, codec->height,
-                    static_cast<unsigned int>(1000.0 / seconds_per_frame));
+                    static_cast<unsigned int>(1000.0 / seconds_per_frame),
+                    audio_bytes_per_second > 0 ? "audio_clock" : "wall_clock",
+                    static_cast<unsigned long long>(kAudioQueueLowWatermarkMs),
+                    static_cast<unsigned long long>(kAudioQueueHighWatermarkMs),
+                    kMaximumDecodedVideoFrames,
+                    kMaximumQueuedVideoPackets,
+                    kMaximumQueuedVideoBytes,
+                    static_cast<unsigned long long>(audio_bytes_per_second));
 
         if (!prime_audio(0)) {
             finish();
@@ -454,6 +591,7 @@ struct VideoPlayer::Impl {
         }
 
         bool reached_end = false;
+        bool input_eof = false;
         while (!stop_requested && !reached_end) {
             const std::int64_t seek_delta_ms = pending_seek_delta_ms.exchange(0);
             if (seek_delta_ms != 0) {
@@ -488,7 +626,13 @@ struct VideoPlayer::Impl {
                         SDL_PauseAudioDevice(device, 1);
                         SDL_ClearQueuedAudio(device);
                     }
-                    clear_primed_video_packets();
+                    clear_video_packets();
+                    video_frames.clear();
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        pending_pixels.clear();
+                        pending_frame = false;
+                    }
                     avcodec_flush_buffers(codec);
                     if (audio_codec != nullptr) avcodec_flush_buffers(audio_codec);
                     if (resampler != nullptr) {
@@ -497,9 +641,9 @@ struct VideoPlayer::Impl {
                     }
                     av_packet_unref(packet);
                     playback_position_ms = target_ms;
-                    last_position_ms = target_ms;
                     discard_video_before_ms = target_ms;
                     discarding_seek_preroll = true;
+                    input_eof = false;
                     if (!prime_audio(target_ms)) continue;
                     std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=seeked from_ms=%llu target_ms=%llu delta_ms=%lld\n",
                                 static_cast<unsigned long long>(current_ms),
@@ -514,124 +658,123 @@ struct VideoPlayer::Impl {
                 }
             }
 
-            int read_result = 0;
-            if (!primed_video_packets.empty()) {
-                AVPacket *saved = primed_video_packets.front();
-                primed_video_packets.pop_front();
-                av_packet_move_ref(packet, saved);
-                av_packet_free(&saved);
-            } else {
-                read_result = av_read_frame(format, packet);
-            }
-            if (read_result < 0) {
-                if (pending_seek_delta_ms.load() != 0) continue;
-                while (!stop_requested && !is_paused &&
-                       pending_seek_delta_ms.load() == 0 &&
-                       audio_device.load() != 0 &&
-                       SDL_GetQueuedAudioSize(audio_device.load()) > 0) {
-                    SDL_Delay(30);
+            if (is_paused) {
+                const auto pause_started = std::chrono::steady_clock::now();
+                std::unique_lock<std::mutex> lock(mutex);
+                wake.wait(lock, [this] {
+                    return stop_requested || !is_paused ||
+                        pending_seek_delta_ms.load() != 0;
+                });
+                if (!audio_started && !stop_requested) {
+                    playback_origin += std::chrono::steady_clock::now() - pause_started;
                 }
-                reached_end = pending_seek_delta_ms.load() == 0;
                 continue;
             }
-            if (packet->stream_index == stream_index &&
-                avcodec_send_packet(codec, packet) >= 0) {
-                while (!stop_requested && avcodec_receive_frame(codec, frame) >= 0) {
-                    const std::uint64_t frame_number = decoded_frames.load() + 1U;
-                    std::uint64_t frame_position_ms = static_cast<std::uint64_t>(
-                        (frame_number - 1U) * seconds_per_frame * 1000.0);
-                    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
-                        const std::int64_t elapsed_ms = av_rescale_q(
-                            std::max<std::int64_t>(0, frame->best_effort_timestamp - stream_start),
-                            stream->time_base, AVRational{1, 1000});
-                        frame_position_ms = static_cast<std::uint64_t>(elapsed_ms);
-                    }
-                    if (discarding_seek_preroll &&
-                        frame_position_ms < discard_video_before_ms) {
-                        continue;
-                    }
-                    if (discarding_seek_preroll) {
-                        discarding_seek_preroll = false;
-                    }
-                    frame_position_ms = std::max(last_position_ms, frame_position_ms);
-                    if (playback_duration_ms > 0) {
-                        frame_position_ms = std::min(frame_position_ms,
-                                                     playback_duration_ms.load());
-                    }
-                    if (first_video_after_prime) {
-                        first_video_after_prime = false;
-                        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=video_sync_start video_pts_ms=%llu audio_pts_ms=%lld\n",
-                                    static_cast<unsigned long long>(frame_position_ms),
-                                    static_cast<long long>(first_audio_pts_ms.value_or(-1)));
-                    }
-                    const SDL_AudioDeviceID pacing_device = audio_device.load();
-                    if (audio_started && pacing_device != 0 && !is_paused &&
-                        SDL_GetQueuedAudioSize(pacing_device) == 0 &&
-                        !audio_queue_underrun_reported) {
-                        audio_queue_underrun_reported = true;
-                        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_queue_underrun video_pts_ms=%llu\n",
-                                    static_cast<unsigned long long>(frame_position_ms));
-                    }
-                    while (!stop_requested) {
-                        std::unique_lock<std::mutex> lock(mutex);
-                        if (is_paused) {
-                            const auto pause_started = std::chrono::steady_clock::now();
-                            wake.wait(lock, [this] {
-                                return stop_requested || !is_paused ||
-                                    pending_seek_delta_ms.load() != 0;
-                            });
-                            if (!stop_requested) {
-                                playback_origin += std::chrono::steady_clock::now() - pause_started;
-                            }
-                            if (pending_seek_delta_ms.load() != 0) break;
-                            continue;
-                        }
-                        const auto target = playback_origin +
-                            std::chrono::milliseconds(frame_position_ms);
-                        if (!wake.wait_until(lock, target, [this] {
-                                return stop_requested || is_paused ||
-                                    pending_seek_delta_ms.load() != 0;
-                            })) break;
-                        if (pending_seek_delta_ms.load() != 0) break;
-                    }
-                    if (stop_requested || pending_seek_delta_ms.load() != 0) break;
-                    const std::size_t stride = static_cast<std::size_t>(codec->width) * 4U;
-                    std::vector<std::uint8_t> pixels(
-                        stride * static_cast<std::size_t>(codec->height));
-                    std::uint8_t *outputs[] = {pixels.data(), nullptr, nullptr, nullptr};
-                    int output_strides[] = {static_cast<int>(stride), 0, 0, 0};
-                    sws_scale(scaler, frame->data, frame->linesize, 0, codec->height,
-                              outputs, output_strides);
-                    {
-                        std::lock_guard<std::mutex> lock(mutex);
-                        pending_pixels = std::move(pixels);
-                        pending_width = codec->width;
-                        pending_height = codec->height;
-                        pending_frame = true;
-                    }
-                    decoded_frames = frame_number;
-                    playback_position_ms = frame_position_ms;
-                    last_position_ms = frame_position_ms;
-                    if (frame_number == 1) {
-                        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=first_frame video_pts_ms=%llu\n",
-                                    static_cast<unsigned long long>(frame_position_ms));
-                    }
+
+            const std::uint64_t clock_ms = audio_clock_ms();
+            present_due_video(clock_ms, false);
+            if (audio_started) {
+                playback_position_ms = playback_duration_ms > 0 ?
+                    std::min(clock_ms, playback_duration_ms.load()) : clock_ms;
+            }
+
+            const std::uint64_t current_queued_ms = queued_audio_ms();
+            if (audio_started && current_queued_ms == 0 && !input_eof) {
+                if (!audio_queue_underrun_active) {
+                    audio_queue_underrun_active = true;
+                    std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_queue_underrun audio_clock_ms=%llu video_queue_frames=%zu video_queue_packets=%zu dropped_video_frames=%llu dropped_video_packets=%llu\n",
+                                static_cast<unsigned long long>(clock_ms),
+                                video_frames.size(),
+                                video_packets.size(),
+                                static_cast<unsigned long long>(dropped_video_frames),
+                                static_cast<unsigned long long>(dropped_video_packets));
                 }
+            } else if (audio_queue_underrun_active && current_queued_ms > 0) {
+                audio_queue_underrun_active = false;
+                std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_queue_refilled audio_clock_ms=%llu queued_ms=%llu\n",
+                            static_cast<unsigned long long>(clock_ms),
+                            static_cast<unsigned long long>(current_queued_ms));
+            }
+            if (audio_started && clock_ms >= next_audio_clock_report_ms) {
+                std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=audio_clock audio_clock_ms=%llu queued_ms=%llu video_queue_frames=%zu video_queue_packets=%zu video_queue_bytes=%zu dropped_video_frames=%llu dropped_video_packets=%llu\n",
+                            static_cast<unsigned long long>(clock_ms),
+                            static_cast<unsigned long long>(current_queued_ms),
+                            video_frames.size(),
+                            video_packets.size(),
+                            queued_video_packet_bytes,
+                            static_cast<unsigned long long>(dropped_video_frames),
+                            static_cast<unsigned long long>(dropped_video_packets));
+                next_audio_clock_report_ms = clock_ms + 1000U;
+            }
+
+            if (audio_started) {
+                if (current_queued_ms < kAudioQueueLowWatermarkMs) refilling_audio = true;
+                if (current_queued_ms >= kAudioQueueHighWatermarkMs) refilling_audio = false;
+            }
+            if (!video_packets.empty() &&
+                video_frames.size() < kMaximumDecodedVideoFrames &&
+                (!audio_started || !refilling_audio || input_eof)) {
+                AVPacket *saved = video_packets.front();
+                video_packets.pop_front();
+                const std::size_t saved_bytes = saved->size > 0 ?
+                    static_cast<std::size_t>(saved->size) : 0U;
+                queued_video_packet_bytes -=
+                    std::min(queued_video_packet_bytes, saved_bytes);
+                decode_video_packet(saved);
+                av_packet_free(&saved);
+                continue;
+            }
+            const bool should_demux = !input_eof &&
+                (audio_started ? (refilling_audio ||
+                    (video_packets.empty() && video_frames.empty() &&
+                     current_queued_ms < kAudioQueueHighWatermarkMs)) :
+                                 (video_packets.empty() &&
+                                  video_frames.size() < kMaximumDecodedVideoFrames));
+            if (!should_demux) {
+                if (input_eof && (!audio_started || current_queued_ms == 0)) {
+                    clear_video_packets();
+                    present_due_video(clock_ms, true);
+                    reached_end = video_frames.empty();
+                    if (reached_end) continue;
+                }
+                std::unique_lock<std::mutex> lock(mutex);
+                wake.wait_for(lock, std::chrono::milliseconds(2), [this] {
+                    return stop_requested || is_paused ||
+                        pending_seek_delta_ms.load() != 0;
+                });
+                continue;
+            }
+
+            const int read_result = av_read_frame(format, packet);
+            if (read_result < 0) {
+                input_eof = true;
+                av_packet_unref(packet);
+                continue;
+            }
+            if (packet->stream_index == stream_index) {
+                if (!first_video_pts_ms) first_video_pts_ms = packet_video_pts_ms(packet);
+                enqueue_video_packet(packet);
             } else if (audio_device.load() != 0 &&
                        packet->stream_index == audio_index &&
                        avcodec_send_packet(audio_codec, packet) >= 0) {
-                queue_audio(
+                const std::uint64_t bytes = queue_audio(
                     audio_codec, resampler, audio_frame, audio_stream,
                     video_start_us, discard_video_before_ms,
                     first_audio_pts_ms, fallback_audio_pts_ms);
+                total_audio_bytes_queued += bytes;
             }
             av_packet_unref(packet);
         }
         if (!stop_requested) {
             if (playback_duration_ms > 0) playback_position_ms = playback_duration_ms.load();
             set_message("Playback finished");
-            std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=finished frames=%llu\n",
-                        static_cast<unsigned long long>(decoded_frames.load()));
+            std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=finished frames=%llu presented_frames=%llu dropped_frames=%llu dropped_packets=%llu audio_clock_ms=%llu queued_ms=%llu\n",
+                        static_cast<unsigned long long>(decoded_frames.load()),
+                        static_cast<unsigned long long>(presented_video_frames),
+                        static_cast<unsigned long long>(dropped_video_frames),
+                        static_cast<unsigned long long>(dropped_video_packets),
+                        static_cast<unsigned long long>(audio_clock_ms()),
+                        static_cast<unsigned long long>(queued_audio_ms()));
         }
         finish();
     }
