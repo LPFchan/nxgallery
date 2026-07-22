@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include <SDL2/SDL.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -72,6 +75,11 @@ constexpr std::int32_t kGroupedHeaderHeight = 30;
 constexpr std::int32_t kGroupedCellStrideY = 171;
 constexpr std::int32_t kGroupedSectionGap = 12;
 constexpr std::int32_t kGroupedViewportHeight = kFooterRuleY - kGridY;
+constexpr std::int32_t kGroupedSelectionHalo = 9;
+constexpr double kGroupedScrollResponse = 12.0;
+constexpr double kGroupedScrollMaximumFrameDelta = 0.05;
+constexpr double kGroupedScrollSnapThreshold = 0.25;
+constexpr double kGroupedScrollVisibilityMargin = 20.0;
 
 // Viewer bottom controls and video timeline.
 constexpr std::int32_t kViewerBarHeight = 64;
@@ -230,20 +238,71 @@ const GroupedItemPosition *grouped_item(const GroupedGridLayout &layout,
     return found == layout.items.end() ? nullptr : &*found;
 }
 
-void ensure_grouped_visible(const GroupedGridLayout &layout, std::size_t media_index,
-                            std::int32_t &scroll_y) {
-    const std::int32_t maximum_scroll =
-        std::max<std::int32_t>(0, layout.total_height - kGroupedViewportHeight);
-    scroll_y = std::clamp(scroll_y, 0, maximum_scroll);
+double grouped_maximum_scroll(const GroupedGridLayout &layout) {
+    return static_cast<double>(
+        std::max<std::int32_t>(0, layout.total_height - kGroupedViewportHeight));
+}
+
+std::int32_t rounded_grouped_scroll(double scroll_y) {
+    return static_cast<std::int32_t>(std::lround(scroll_y));
+}
+
+std::int32_t grouped_screen_y(std::int32_t virtual_y, std::int32_t scroll_y) {
+    return kGridY + virtual_y - scroll_y;
+}
+
+void target_grouped_visible(const GroupedGridLayout &layout, std::size_t media_index,
+                            double &scroll_target_y) {
+    const double maximum_scroll = grouped_maximum_scroll(layout);
+    scroll_target_y = std::clamp(scroll_target_y, 0.0, maximum_scroll);
     const GroupedItemPosition *item = grouped_item(layout, media_index);
     if (item == nullptr) return;
-    if (item->virtual_y < scroll_y + kGroupedHeaderHeight) {
-        scroll_y = std::max<std::int32_t>(0, item->header_y);
-    } else if (item->virtual_y + kCellHeight > scroll_y + kGroupedViewportHeight) {
-        scroll_y = item->virtual_y + kCellHeight - kGroupedViewportHeight;
+    const double item_top = item->row == 0 ? item->header_y : item->virtual_y;
+    const double item_bottom = item->virtual_y + kCellHeight;
+    if (item_top < scroll_target_y + kGroupedScrollVisibilityMargin) {
+        scroll_target_y = item_top - kGroupedScrollVisibilityMargin;
+    } else if (item_bottom > scroll_target_y + kGroupedViewportHeight -
+                                      kGroupedScrollVisibilityMargin) {
+        scroll_target_y = item_bottom - kGroupedViewportHeight +
+                          kGroupedScrollVisibilityMargin;
     }
-    scroll_y = std::clamp(scroll_y, 0, maximum_scroll);
+    scroll_target_y = std::clamp(scroll_target_y, 0.0, maximum_scroll);
 }
+
+class ScopedRendererClip final {
+public:
+    ScopedRendererClip(SDL_Renderer *renderer, std::int32_t x, std::int32_t y,
+                       std::int32_t width, std::int32_t height)
+        : renderer_(renderer) {
+        if (renderer_ == nullptr) return;
+        previous_enabled_ = SDL_RenderIsClipEnabled(renderer_);
+        SDL_RenderGetClipRect(renderer_, &previous_clip_);
+        const auto scaled = [](std::int32_t value) {
+            return static_cast<int>(std::lround(
+                value * pu::ui::render::ScreenFactor));
+        };
+        const int left = scaled(x);
+        const int top = scaled(y);
+        const int right = scaled(x + width);
+        const int bottom = scaled(y + height);
+        const SDL_Rect clip{left, top, right - left, bottom - top};
+        SDL_RenderSetClipRect(renderer_, &clip);
+    }
+
+    ~ScopedRendererClip() {
+        if (renderer_ == nullptr) return;
+        SDL_RenderSetClipRect(renderer_,
+                              previous_enabled_ == SDL_TRUE ? &previous_clip_ : nullptr);
+    }
+
+    ScopedRendererClip(const ScopedRendererClip &) = delete;
+    ScopedRendererClip &operator=(const ScopedRendererClip &) = delete;
+
+private:
+    SDL_Renderer *renderer_{};
+    SDL_Rect previous_clip_{};
+    SDL_bool previous_enabled_{SDL_FALSE};
+};
 
 void report_process_memory(const char *stage) {
     u64 total = 0;
@@ -334,7 +393,8 @@ public:
                    bool &update_installing,
                    std::atomic<std::uint64_t> &update_current,
                    std::atomic<std::uint64_t> &update_total,
-                   bool &group_by_date, std::int32_t &grouped_scroll_y,
+                   bool &group_by_date, double &grouped_scroll_y,
+                   double &grouped_scroll_target_y,
                    std::int32_t &scrub_direction, std::int64_t &scrub_offset_ms,
                    bool constrained_applet)
         : controller_(controller), status_(status), video_player_(video_player),
@@ -348,6 +408,7 @@ public:
           update_installing_(update_installing),
           update_current_(update_current), update_total_(update_total),
           group_by_date_(group_by_date), grouped_scroll_y_(grouped_scroll_y),
+          grouped_scroll_target_y_(grouped_scroll_target_y),
           scrub_direction_(scrub_direction), scrub_offset_ms_(scrub_offset_ms),
           thumbnail_cache_pages_(constrained_applet ?
               kConstrainedThumbnailCachePages : kThumbnailCachePages),
@@ -386,6 +447,7 @@ public:
         text_slot_ = 0;
         hint_zones_.clear();
         ++pulse_frame_;
+        animate_grouped_scroll();
         advance_transition();
         switch (controller_.screen()) {
             case Screen::Grid:
@@ -807,27 +869,71 @@ private:
         return grouped_layout_;
     }
 
+    void animate_grouped_scroll() {
+        const auto now = std::chrono::steady_clock::now();
+        if (!group_by_date_) {
+            grouped_scroll_render_time_ = now;
+            return;
+        }
+
+        const GroupedGridLayout &layout = current_grouped_layout();
+        const double maximum_scroll = grouped_maximum_scroll(layout);
+        grouped_scroll_target_y_ = std::clamp(
+            grouped_scroll_target_y_, 0.0, maximum_scroll);
+        if (maximum_scroll < grouped_scroll_maximum_y_) {
+            grouped_scroll_y_ = std::min(grouped_scroll_y_, maximum_scroll);
+        }
+        grouped_scroll_y_ = std::max(0.0, grouped_scroll_y_);
+        grouped_scroll_maximum_y_ = maximum_scroll;
+        target_grouped_visible(layout, controller_.selected_media_index(),
+                               grouped_scroll_target_y_);
+
+        double elapsed = 0.0;
+        if (grouped_scroll_render_time_.time_since_epoch().count() != 0) {
+            elapsed = std::chrono::duration<double>(
+                now - grouped_scroll_render_time_).count();
+        }
+        grouped_scroll_render_time_ = now;
+        const double frame_delta = std::clamp(
+            elapsed, 0.0, kGroupedScrollMaximumFrameDelta);
+        const double alpha = 1.0 - std::exp(-kGroupedScrollResponse * frame_delta);
+        grouped_scroll_y_ +=
+            (grouped_scroll_target_y_ - grouped_scroll_y_) * alpha;
+        if (std::abs(grouped_scroll_target_y_ - grouped_scroll_y_) <=
+            kGroupedScrollSnapThreshold) {
+            grouped_scroll_y_ = grouped_scroll_target_y_;
+        }
+    }
+
     void render_grouped_grid(pu::ui::render::Renderer::Ref &drawer) {
         const GroupedGridLayout &layout = current_grouped_layout();
-        ensure_grouped_visible(layout, controller_.selected_media_index(), grouped_scroll_y_);
+        const std::int32_t scroll_y = rounded_grouped_scroll(grouped_scroll_y_);
+        const std::int32_t clip_left = kGridX - kGroupedSelectionHalo;
+        const std::int32_t clip_right =
+            kGridX + (GalleryController::kGridColumns - 1) * kCellStrideX +
+            kCellWidth + kGroupedSelectionHalo;
+        const ScopedRendererClip clip(
+            pu::ui::render::GetMainRenderer(), clip_left, kGridY,
+            clip_right - clip_left, kGroupedViewportHeight);
         for (const GroupedHeaderPosition &header : layout.headers) {
-            const std::int32_t y = kGridY + header.virtual_y - grouped_scroll_y_;
-            if (y < kGridY || y + 26 > kFooterRuleY) continue;
+            const std::int32_t y = grouped_screen_y(header.virtual_y, scroll_y);
+            if (y + kGroupedHeaderHeight <= kGridY || y >= kFooterRuleY) continue;
             text(drawer, header.label, 18, kMuted, kGridX, y + 5);
             drawer->RenderRectangleFill(kDialogRule, kGridX + 300, y + 17,
                                         kWidth - kGridX - 340, 1);
         }
         for (const GroupedItemPosition &item : layout.items) {
-            const std::int32_t y = kGridY + item.virtual_y - grouped_scroll_y_;
-            if (y < kGridY || y + kCellHeight > kFooterRuleY) continue;
+            const std::int32_t y = grouped_screen_y(item.virtual_y, scroll_y);
+            if (y + kCellHeight <= kGridY || y >= kFooterRuleY) continue;
             render_grid_cell(drawer, item.media_index,
                              kGridX + item.column * kCellStrideX, y);
         }
         const GroupedItemPosition *selected = grouped_item(
             layout, controller_.selected_media_index());
         if (selected == nullptr) return;
-        const std::int32_t y = kGridY + selected->virtual_y - grouped_scroll_y_;
-        if (y >= kGridY && y + kCellHeight <= kFooterRuleY) {
+        const std::int32_t y = grouped_screen_y(selected->virtual_y, scroll_y);
+        if (y + kCellHeight + kGroupedSelectionHalo > kGridY &&
+            y - kGroupedSelectionHalo < kFooterRuleY) {
             render_grid_selection(drawer,
                                   kGridX + selected->column * kCellStrideX, y);
         }
@@ -1243,7 +1349,8 @@ private:
     std::atomic<std::uint64_t> &update_current_;
     std::atomic<std::uint64_t> &update_total_;
     bool &group_by_date_;
-    std::int32_t &grouped_scroll_y_;
+    double &grouped_scroll_y_;
+    double &grouped_scroll_target_y_;
     std::int32_t &scrub_direction_;
     std::int64_t &scrub_offset_ms_;
     std::size_t thumbnail_cache_pages_{};
@@ -1273,6 +1380,8 @@ private:
     std::uint32_t transition_frame_{kTransitionFrames};
     double transition_linear_t_{1.0};
     double transition_t_{1.0};
+    double grouped_scroll_maximum_y_{};
+    std::chrono::steady_clock::time_point grouped_scroll_render_time_{};
     bool viewer_navigation_transition_{};
     bool shown_update_notice_{};
 };
@@ -1319,6 +1428,7 @@ void GalleryApplication::OnLoad() {
                                                 update_available_, update_installing_,
                                                 update_current_, update_total_,
                                                 group_by_date_, grouped_scroll_y_,
+                                                grouped_scroll_target_y_,
                                                 scrub_direction_, scrub_offset_ms_,
                                                 constrained_applet_);
     layout_->Add(element_);
@@ -1683,7 +1793,8 @@ bool GalleryApplication::move_grouped_grid(Action action) {
         if (action == Action::Right && index + 1 < controller_.media().size()) {
             controller_.select_media(index + 1);
         }
-        ensure_grouped_visible(layout, controller_.selected_media_index(), grouped_scroll_y_);
+        target_grouped_visible(layout, controller_.selected_media_index(),
+                               grouped_scroll_target_y_);
         return true;
     }
     if (action != Action::Up && action != Action::Down) return false;
@@ -1709,7 +1820,8 @@ bool GalleryApplication::move_grouped_grid(Action action) {
         }
     }
     if (best != nullptr) controller_.select_media(best->media_index);
-    ensure_grouped_visible(layout, controller_.selected_media_index(), grouped_scroll_y_);
+    target_grouped_visible(layout, controller_.selected_media_index(),
+                           grouped_scroll_target_y_);
     return true;
 }
 
@@ -1724,22 +1836,35 @@ void GalleryApplication::on_swipe(std::int32_t dx, std::int32_t dy) {
             const GroupedItemPosition *current = grouped_item(
                 layout, controller_.selected_media_index());
             if (current == nullptr) return;
-            const std::int32_t target_y = current->virtual_y +
-                (dy < 0 ? kGroupedViewportHeight : -kGroupedViewportHeight);
-            const GroupedItemPosition *best = current;
-            std::int32_t best_distance = std::numeric_limits<std::int32_t>::max();
+            const double maximum_scroll = grouped_maximum_scroll(layout);
+            grouped_scroll_target_y_ = std::clamp(
+                grouped_scroll_target_y_ +
+                    (dy < 0 ? kGroupedViewportHeight : -kGroupedViewportHeight),
+                0.0, maximum_scroll);
+            const double target_center =
+                grouped_scroll_target_y_ + kGroupedViewportHeight / 2.0;
+            const GroupedItemPosition *best = nullptr;
+            std::int32_t best_column_distance =
+                std::numeric_limits<std::int32_t>::max();
+            double best_vertical_distance = std::numeric_limits<double>::max();
             for (const GroupedItemPosition &candidate : layout.items) {
-                if ((dy < 0 && candidate.virtual_y <= current->virtual_y) ||
-                    (dy > 0 && candidate.virtual_y >= current->virtual_y)) continue;
-                const std::int32_t distance = std::abs(candidate.virtual_y - target_y) * 8 +
+                const std::int32_t column_distance =
                     std::abs(candidate.column - current->column);
-                if (distance < best_distance) {
-                    best_distance = distance;
+                const double vertical_distance = std::abs(
+                    candidate.virtual_y + kCellHeight / 2.0 - target_center);
+                if (column_distance < best_column_distance ||
+                    (column_distance == best_column_distance &&
+                     vertical_distance < best_vertical_distance)) {
+                    best_column_distance = column_distance;
+                    best_vertical_distance = vertical_distance;
                     best = &candidate;
                 }
             }
-            controller_.select_media(best->media_index);
-            ensure_grouped_visible(layout, best->media_index, grouped_scroll_y_);
+            if (best != nullptr) {
+                controller_.select_media(best->media_index);
+                target_grouped_visible(layout, best->media_index,
+                                       grouped_scroll_target_y_);
+            }
             return;
         }
         constexpr std::size_t page =
@@ -1787,6 +1912,7 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
         case HintTag::GroupDate:
             group_by_date_ = !group_by_date_;
             grouped_scroll_y_ = 0;
+            grouped_scroll_target_y_ = 0;
             break;
         case HintTag::Update: start_release_install(); break;
         case HintTag::Back:
@@ -1819,13 +1945,18 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
     if (controller_.screen() == Screen::Grid) {
         if (group_by_date_) {
             const GroupedGridLayout layout = grouped_grid_layout(controller_.media());
-            ensure_grouped_visible(layout, controller_.selected_media_index(),
-                                   grouped_scroll_y_);
+            if (touch.y < static_cast<u32>(kGridY) ||
+                touch.y >= static_cast<u32>(kFooterRuleY)) return;
+            const std::int32_t scroll_y = rounded_grouped_scroll(grouped_scroll_y_);
             for (const GroupedItemPosition &item : layout.items) {
-                const std::int32_t y = kGridY + item.virtual_y - grouped_scroll_y_;
-                if (y < kGridY || y + kCellHeight > kFooterRuleY) continue;
-                if (touch.HitsRegion(kGridX + item.column * kCellStrideX, y,
-                                     kCellWidth, kCellHeight)) {
+                const std::int32_t y = grouped_screen_y(item.virtual_y, scroll_y);
+                const std::int32_t visible_top = std::max(y, kGridY);
+                const std::int32_t visible_bottom =
+                    std::min(y + kCellHeight, kFooterRuleY);
+                if (visible_bottom <= visible_top) continue;
+                if (touch.HitsRegion(kGridX + item.column * kCellStrideX,
+                                     visible_top, kCellWidth,
+                                     visible_bottom - visible_top)) {
                     controller_.select_media(item.media_index);
                     controller_.handle(Action::Confirm);
                     return;
@@ -2162,6 +2293,7 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::Grid) {
         group_by_date_ = !group_by_date_;
         grouped_scroll_y_ = 0;
+        grouped_scroll_target_y_ = 0;
         return;
     }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::ChatPicker) {

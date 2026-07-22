@@ -100,7 +100,8 @@ private:
     bool release_updates_enabled_{};
     bool constrained_applet_{};
     bool group_by_date_{};
-    std::int32_t grouped_scroll_y_{};
+    double grouped_scroll_y_{};
+    double grouped_scroll_target_y_{};
     std::int32_t scrub_direction_{};
     std::uint32_t scrub_hold_frames_{};
     std::int64_t scrub_offset_ms_{};
