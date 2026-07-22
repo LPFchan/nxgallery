@@ -88,7 +88,7 @@ export SWITCH_CURL_PREFIX=/path/to/staged/switch-curl
 export SWITCH_OPENSSL_PREFIX=/path/to/staged/switch-openssl
 export PLAYBACK_PREFIX=/path/to/staged/switch-ffmpeg-portlibs
 export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
-make -j4 APP_VERSION=0.1.3
+make -j4 APP_VERSION=0.1.4
 ```
 
 `PLAYBACK_PREFIX` must contain a Switch FFmpeg build with H.264 and AAC

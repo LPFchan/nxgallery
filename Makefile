@@ -30,7 +30,7 @@ endif
 endif
 APP_TITLE   := NX Gallery
 APP_AUTHOR  := LPFchan
-APP_VERSION ?= 0.1.3
+APP_VERSION ?= 0.1.4
 APP_ICON    := $(CURDIR)/icon.jpg
 
 ARCH     := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -ftls-model=local-exec -fPIE
