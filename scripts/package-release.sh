@@ -2,27 +2,15 @@
 set -eu
 
 if [ "$#" -ne 2 ]; then
-    echo "usage: $0 /path/to/nxgallery.nro /path/to/nxgallery-sd.zip" >&2
+    echo "usage: $0 /path/to/nxgallery.nro /path/to/output/nxgallery.nro" >&2
     exit 2
 fi
 
-repo_root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 input_nro=$1
-output_zip=$2
-output_parent=$(CDPATH= cd "$(dirname "$output_zip")" && pwd)
-output_zip="$output_parent/$(basename "$output_zip")"
-ca_bundle="$repo_root/payload/switch/nxgallery/openssl/cert.pem"
-config_example="$repo_root/telegram-bot.conf.example"
-install_guide="$repo_root/payload/INSTALL.txt"
+output_parent=$(CDPATH= cd "$(dirname "$2")" && pwd)
+output_nro="$output_parent/$(basename "$2")"
 
 [ -f "$input_nro" ] || { echo "NRO not found: $input_nro" >&2; exit 1; }
-[ -s "$ca_bundle" ] || { echo "CA bundle missing" >&2; exit 1; }
-[ -f "$config_example" ] || { echo "configuration example missing" >&2; exit 1; }
-[ -f "$install_guide" ] || { echo "install guide missing" >&2; exit 1; }
-if grep -Eq '^bot_token=[0-9]{5,}:[A-Za-z0-9_-]{20,}$' "$config_example"; then
-    echo "refusing to package a credential-bearing example" >&2
-    exit 1
-fi
 
 read_u32_le() {
     LC_ALL=C od -An -tu4 -N 4 -j "$2" "$1" | tr -d '[:space:]'
@@ -77,17 +65,6 @@ validate_nro_assets "$input_nro" || {
     exit 1
 }
 
-stage=$(mktemp -d "${TMPDIR:-/tmp}/nxgallery-package.XXXXXX")
-cleanup() { rm -rf "$stage"; }
-trap cleanup EXIT HUP INT TERM
-mkdir -p "$stage/switch/nxgallery/openssl"
-cp "$input_nro" "$stage/switch/nxgallery/nxgallery.nro"
-cp "$ca_bundle" "$stage/switch/nxgallery/openssl/cert.pem"
-cp "$config_example" "$stage/switch/nxgallery/telegram-bot.conf.example"
-cp "$install_guide" "$stage/INSTALL.txt"
-find "$stage" -type f -exec chmod 0644 {} \;
-(
-    cd "$stage"
-    find . -type f -print | LC_ALL=C sort | zip -X -q "$output_zip" -@
-)
-printf 'Packaged %s\n' "$output_zip"
+cp "$input_nro" "$output_nro"
+chmod 0644 "$output_nro"
+printf 'Packaged %s\n' "$output_nro"
