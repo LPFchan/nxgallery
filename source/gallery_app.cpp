@@ -277,15 +277,7 @@ public:
         if (renderer_ == nullptr) return;
         previous_enabled_ = SDL_RenderIsClipEnabled(renderer_);
         SDL_RenderGetClipRect(renderer_, &previous_clip_);
-        const auto scaled = [](std::int32_t value) {
-            return static_cast<int>(std::lround(
-                value * pu::ui::render::ScreenFactor));
-        };
-        const int left = scaled(x);
-        const int top = scaled(y);
-        const int right = scaled(x + width);
-        const int bottom = scaled(y + height);
-        const SDL_Rect clip{left, top, right - left, bottom - top};
+        const SDL_Rect clip{x, y, width, height};
         SDL_RenderSetClipRect(renderer_, &clip);
     }
 
@@ -443,11 +435,11 @@ public:
     }
 
     void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32, const s32) override {
+        animate_grouped_scroll();
         if (thumbnail_loading_started_) update_thumbnail_cache();
         text_slot_ = 0;
         hint_zones_.clear();
         ++pulse_frame_;
-        animate_grouped_scroll();
         advance_transition();
         switch (controller_.screen()) {
             case Screen::Grid:
@@ -553,6 +545,63 @@ private:
             thumbnail_slots_.reserve(std::min(media.size(), maximum_thumbnail_textures_));
         }
         if (media.empty()) return;
+
+        if (group_by_date_) {
+            const GroupedGridLayout &layout = current_grouped_layout();
+            const double viewport_top = grouped_scroll_y_;
+            const double viewport_bottom = viewport_top + kGroupedViewportHeight;
+            const double residency_top = viewport_top - kGroupedCellStrideY;
+            const double residency_bottom = viewport_bottom + kGroupedCellStrideY;
+            std::vector<std::size_t> visible_indices;
+            std::vector<std::size_t> resident_indices;
+            visible_indices.reserve(kThumbnailPageSize * 2);
+            resident_indices.reserve(maximum_thumbnail_textures_);
+
+            const auto intersects = [](const GroupedItemPosition &item,
+                                       double top, double bottom) {
+                return item.virtual_y + kCellHeight > top &&
+                       item.virtual_y < bottom;
+            };
+            for (const GroupedItemPosition &item : layout.items) {
+                if (intersects(item, viewport_top, viewport_bottom)) {
+                    visible_indices.push_back(item.media_index);
+                    resident_indices.push_back(item.media_index);
+                }
+            }
+            for (const GroupedItemPosition &item : layout.items) {
+                if (resident_indices.size() >= maximum_thumbnail_textures_) break;
+                if (!intersects(item, residency_top, residency_bottom) ||
+                    intersects(item, viewport_top, viewport_bottom)) continue;
+                resident_indices.push_back(item.media_index);
+            }
+
+            auto slot = thumbnail_slots_.begin();
+            while (slot != thumbnail_slots_.end()) {
+                if (std::find(resident_indices.begin(), resident_indices.end(),
+                              slot->media_index) == resident_indices.end()) {
+                    pu::ui::render::DeleteTexture(slot->texture);
+                    thumbnail_states_[slot->media_index] = ThumbnailState::Unloaded;
+                    slot = thumbnail_slots_.erase(slot);
+                } else {
+                    ++slot;
+                }
+            }
+
+            const auto load_first_missing = [this](const std::vector<std::size_t> &indices) {
+                for (const std::size_t index : indices) {
+                    if (thumbnail_states_[index] == ThumbnailState::Unloaded) {
+                        load_thumbnail(index);
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            // Keep every on-screen item resident, then prefetch the adjacent rows.
+            if (load_first_missing(visible_indices)) return;
+            load_first_missing(resident_indices);
+            return;
+        }
 
         const std::size_t page_count =
             (media.size() + kThumbnailPageSize - 1) / kThumbnailPageSize;
@@ -973,8 +1022,6 @@ private:
              29, kInk, 60, 27);
         drawer->RenderRectangleFill(kRule, kRuleInsetX, kHeaderRuleY,
                                     kWidth - 2 * kRuleInsetX, 1);
-        drawer->RenderRectangleFill(kRule, kRuleInsetX, kFooterRuleY,
-                                    kWidth - 2 * kRuleInsetX, 1);
         const auto &media = controller_.media();
         if (controller_.multi_select_active()) {
             text_right(drawer,
@@ -996,6 +1043,10 @@ private:
         }
         if (group_by_date_) render_grouped_grid(drawer);
         else render_flat_grid(drawer);
+        drawer->RenderRectangleFill(kBackground, 0, kFooterRuleY, kWidth,
+                                    kHeight - kFooterRuleY);
+        drawer->RenderRectangleFill(kRule, kRuleInsetX, kFooterRuleY,
+                                    kWidth - 2 * kRuleInsetX, 1);
         std::vector<HintItem> grid_hints;
         if (update_available_) {
             hints(drawer, {{" Update", HintTag::Update, 0}},
