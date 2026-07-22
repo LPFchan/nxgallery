@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <netinet/in.h>
 #include <string>
@@ -364,10 +365,26 @@ std::string installed_nro_path(int argc, char **argv) {
     return nxgallery::kInstalledNroPath;
 }
 
+void report_startup_memory(const char *stage, AppletType applet_type) {
+    u64 total = 0;
+    u64 used = 0;
+    const Result total_result = svcGetInfo(
+        &total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    const Result used_result = svcGetInfo(
+        &used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+    std::printf("NXGALLERY_DIAGNOSTIC event=startup_memory stage=%s result=%s applet_type=%u total=%llu used=%llu\n",
+                stage, R_SUCCEEDED(total_result) && R_SUCCEEDED(used_result) ? "pass" : "fail",
+                static_cast<unsigned int>(applet_type),
+                static_cast<unsigned long long>(total),
+                static_cast<unsigned long long>(used));
+}
+
 int main(int argc, char **argv) {
     nxgallery::install_crash_diagnostics();
     const ProbeOptions probe = parse_probe_options(argc, argv);
     const bool probe_mode = probe.enabled;
+    const AppletType applet_type = appletGetAppletType();
+    const bool constrained_applet = applet_type == AppletType_LibraryApplet;
     SocketInitConfig socket_config = *socketGetDefaultInitConfig();
     socket_config.num_bsd_sessions = 8;
     const Result socket_result = socketInitialize(&socket_config);
@@ -375,7 +392,10 @@ int main(int argc, char **argv) {
     if (nxlink_socket >= 0) {
         std::setvbuf(stdout, nullptr, _IONBF, 0);
         std::setvbuf(stderr, nullptr, _IONBF, 0);
-        std::printf("NXGALLERY_DIAGNOSTIC event=startup probe=%s\n", probe_mode ? "true" : "false");
+        std::printf("NXGALLERY_DIAGNOSTIC event=startup probe=%s applet_type=%u constrained=%s\n",
+                    probe_mode ? "true" : "false",
+                    static_cast<unsigned int>(applet_type),
+                    constrained_applet ? "true" : "false");
     }
     bool curl_ready = false;
     bool release_updates_enabled = false;
@@ -477,27 +497,45 @@ int main(int argc, char **argv) {
         if (R_SUCCEEDED(socket_result)) socketExit();
         return 0;
     }
-    pu::ui::render::RendererInitOptions options(
-        SDL_INIT_VIDEO, pu::ui::render::RendererHardwareFlags, 1280, 720);
-    options.SetPlServiceType(PlServiceType_User);
-    options.AddDefaultSharedFont(PlSharedFontType_Standard);
-    options.AddDefaultSharedFont(PlSharedFontType_KO);
-    options.AddDefaultSharedFont(PlSharedFontType_NintendoExt);
-    for (const std::uint32_t size : {16U, 17U, 18U, 19U, 20U, 22U, 23U,
-                                     24U, 25U, 29U, 32U, 34U, 48U}) {
-        options.AddExtraDefaultFontSize(size);
+    Result load_result = MAKERESULT(Module_Libnx, LibnxError_ShouldNotHappen);
+    pu::ui::render::Renderer::Ref renderer;
+    std::shared_ptr<nxgallery::GalleryApplication> application;
+    report_startup_memory("before_renderer", applet_type);
+    try {
+        pu::ui::render::RendererInitOptions options(
+            SDL_INIT_VIDEO, pu::ui::render::RendererHardwareFlags, 1280, 720);
+        options.SetPlServiceType(PlServiceType_User);
+        options.AddDefaultSharedFont(PlSharedFontType_Standard);
+        options.AddDefaultSharedFont(PlSharedFontType_KO);
+        options.AddDefaultSharedFont(PlSharedFontType_NintendoExt);
+        for (const std::uint32_t size : {16U, 17U, 18U, 19U, 20U, 22U, 23U,
+                                         24U, 25U, 29U, 32U, 34U, 48U}) {
+            options.AddExtraDefaultFontSize(size);
+        }
+        options.SetInputPlayerCount(1);
+        options.AddInputNpadIdType(HidNpadIdType_Handheld);
+        options.AddInputNpadIdType(HidNpadIdType_No1);
+        options.AddInputNpadStyleTag(HidNpadStyleSet_NpadStandard);
+        renderer = pu::ui::render::Renderer::New(options);
+        if (!renderer) {
+            std::printf("NXGALLERY_DIAGNOSTIC event=ui_load state=renderer_unavailable\n");
+        } else {
+            application = std::make_shared<nxgallery::GalleryApplication>(
+                renderer, std::move(album), std::move(bot), std::move(telegram_status),
+                telegram_token_present, release_updates_enabled, constrained_applet,
+                installed_nro_path(argc, argv));
+            load_result = application->Load();
+            report_startup_memory("renderer_loaded", applet_type);
+            if (R_SUCCEEDED(load_result)) application->Show();
+            else std::printf("NXGALLERY_DIAGNOSTIC event=ui_load state=failed rc=0x%08x\n",
+                             static_cast<unsigned int>(load_result));
+        }
+    } catch (const std::exception &error) {
+        std::printf("NXGALLERY_DIAGNOSTIC event=ui_load state=exception message=%s\n",
+                    error.what());
+    } catch (...) {
+        std::printf("NXGALLERY_DIAGNOSTIC event=ui_load state=unknown_exception\n");
     }
-    options.SetInputPlayerCount(1);
-    options.AddInputNpadIdType(HidNpadIdType_Handheld);
-    options.AddInputNpadIdType(HidNpadIdType_No1);
-    options.AddInputNpadStyleTag(HidNpadStyleSet_NpadStandard);
-    auto renderer = pu::ui::render::Renderer::New(options);
-    auto application = std::make_shared<nxgallery::GalleryApplication>(
-        renderer, std::move(album), std::move(bot), std::move(telegram_status),
-        telegram_token_present, release_updates_enabled,
-        installed_nro_path(argc, argv));
-    const Result load_result = application->Load();
-    if (R_SUCCEEDED(load_result)) application->Show();
     application.reset();
     renderer.reset();
     nxgallery::shutdown_horizon_album();

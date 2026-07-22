@@ -437,7 +437,7 @@ void VideoPlayer::toggle_pause() {
 }
 
 void VideoPlayer::seek_relative(std::int64_t delta_ms) {
-    if (delta_ms == 0 || !impl_->is_active || impl_->is_paused) return;
+    if (delta_ms == 0 || !impl_->is_active) return;
     std::int64_t pending = impl_->pending_seek_delta_ms.load();
     while (true) {
         std::int64_t combined = 0;

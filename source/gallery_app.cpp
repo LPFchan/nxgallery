@@ -11,6 +11,9 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
+#include <exception>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -62,11 +65,20 @@ constexpr std::int32_t kCellStrideY = 173;
 constexpr std::size_t kThumbnailPageSize =
     GalleryController::kGridColumns * GalleryController::kVisibleRows;
 constexpr std::size_t kThumbnailCachePages = 4;
-constexpr std::size_t kMaximumThumbnailTextures =
-    kThumbnailPageSize * kThumbnailCachePages;
+constexpr std::size_t kConstrainedThumbnailCachePages = 2;
+constexpr std::size_t kMaximumImageTextures = 16;
+constexpr std::size_t kConstrainedImageTextures = 4;
+constexpr std::int32_t kGroupedHeaderHeight = 30;
+constexpr std::int32_t kGroupedCellStrideY = 171;
+constexpr std::int32_t kGroupedSectionGap = 12;
+constexpr std::int32_t kGroupedViewportHeight = kFooterRuleY - kGridY;
 
 // Viewer bottom controls and video timeline.
 constexpr std::int32_t kViewerBarHeight = 64;
+constexpr std::int64_t kScrubBaseIncrementMs = 16;
+constexpr std::int64_t kScrubMaxIncrementMs = 500;
+constexpr std::uint64_t kScrubRampDivisor = 20;
+constexpr std::uint32_t kScrubHoldFrameStep = 1;
 constexpr std::int32_t kTimelineX = 40;
 constexpr std::int32_t kTimelineY = 634;
 constexpr std::int32_t kTimelineWidth = 980;
@@ -118,7 +130,135 @@ constexpr std::int32_t kSetupQrY = 176;
 constexpr std::int32_t kSetupQrPanel = 320;
 constexpr std::int32_t kSetupTextX = 600;
 
-enum class HintTag { View, PlayPause, Prev, Next, Share, Back, MultiSelect, Update };
+enum class HintTag {
+    View, PlayPause, Prev, Next, Share, Back, MultiSelect, GroupDate, Update
+};
+
+struct CaptureDate {
+    std::int32_t key{};
+    std::string label;
+};
+
+struct GroupedItemPosition {
+    std::size_t media_index{};
+    std::int32_t row{};
+    std::int32_t column{};
+    std::int32_t virtual_y{};
+    std::int32_t header_y{};
+};
+
+struct GroupedHeaderPosition {
+    std::string label;
+    std::int32_t virtual_y{};
+};
+
+struct GroupedGridLayout {
+    std::vector<GroupedHeaderPosition> headers;
+    std::vector<GroupedItemPosition> items;
+    std::int32_t total_height{};
+};
+
+CaptureDate capture_date(std::int64_t value) {
+    std::tm date{};
+    bool valid = false;
+    if (value >= 100000000000000LL) {
+        const std::int64_t year = value / 10000000000000LL;
+        const std::int64_t month = (value / 100000000000LL) % 100;
+        const std::int64_t day = (value / 1000000000LL) % 100;
+        if (year >= 1970 && year <= 9999 && month >= 1 && month <= 12 &&
+            day >= 1 && day <= 31) {
+            date.tm_year = static_cast<int>(year) - 1900;
+            date.tm_mon = static_cast<int>(month) - 1;
+            date.tm_mday = static_cast<int>(day);
+            date.tm_hour = 12;
+            (void)std::mktime(&date);
+            valid = true;
+        }
+    } else if (value > 0 &&
+               value <= static_cast<std::int64_t>(std::numeric_limits<std::time_t>::max())) {
+        const std::time_t timestamp = static_cast<std::time_t>(value);
+        valid = localtime_r(&timestamp, &date) != nullptr;
+    }
+    if (!valid) return {0, "Unknown date"};
+
+    char label[64]{};
+    if (std::strftime(label, sizeof(label), "%A, %B %d, %Y", &date) == 0) {
+        std::snprintf(label, sizeof(label), "%04d-%02d-%02d",
+                      date.tm_year + 1900, date.tm_mon + 1, date.tm_mday);
+    }
+    return {(date.tm_year + 1900) * 10000 + (date.tm_mon + 1) * 100 + date.tm_mday,
+            label};
+}
+
+GroupedGridLayout grouped_grid_layout(const std::vector<MediaItem> &media) {
+    GroupedGridLayout layout;
+    layout.items.reserve(media.size());
+    std::int32_t virtual_y = 0;
+    std::size_t index = 0;
+    while (index < media.size()) {
+        const CaptureDate date = capture_date(media[index].modified_time);
+        const std::int32_t header_y = virtual_y;
+        layout.headers.push_back({date.label, header_y});
+        virtual_y += kGroupedHeaderHeight;
+        std::size_t group_offset = 0;
+        while (index < media.size() &&
+               capture_date(media[index].modified_time).key == date.key) {
+            const std::int32_t row = static_cast<std::int32_t>(
+                group_offset / GalleryController::kGridColumns);
+            const std::int32_t column = static_cast<std::int32_t>(
+                group_offset % GalleryController::kGridColumns);
+            layout.items.push_back({index, row, column,
+                                    virtual_y + row * kGroupedCellStrideY, header_y});
+            ++group_offset;
+            ++index;
+        }
+        const std::int32_t rows = static_cast<std::int32_t>(
+            (group_offset + GalleryController::kGridColumns - 1) /
+            GalleryController::kGridColumns);
+        virtual_y += rows * kGroupedCellStrideY + kGroupedSectionGap;
+    }
+    layout.total_height = std::max<std::int32_t>(0, virtual_y - kGroupedSectionGap);
+    return layout;
+}
+
+const GroupedItemPosition *grouped_item(const GroupedGridLayout &layout,
+                                        std::size_t media_index) {
+    const auto found = std::find_if(layout.items.begin(), layout.items.end(),
+                                    [media_index](const GroupedItemPosition &item) {
+                                        return item.media_index == media_index;
+                                    });
+    return found == layout.items.end() ? nullptr : &*found;
+}
+
+void ensure_grouped_visible(const GroupedGridLayout &layout, std::size_t media_index,
+                            std::int32_t &scroll_y) {
+    const std::int32_t maximum_scroll =
+        std::max<std::int32_t>(0, layout.total_height - kGroupedViewportHeight);
+    scroll_y = std::clamp(scroll_y, 0, maximum_scroll);
+    const GroupedItemPosition *item = grouped_item(layout, media_index);
+    if (item == nullptr) return;
+    if (item->virtual_y < scroll_y + kGroupedHeaderHeight) {
+        scroll_y = std::max<std::int32_t>(0, item->header_y);
+    } else if (item->virtual_y + kCellHeight > scroll_y + kGroupedViewportHeight) {
+        scroll_y = item->virtual_y + kCellHeight - kGroupedViewportHeight;
+    }
+    scroll_y = std::clamp(scroll_y, 0, maximum_scroll);
+}
+
+void report_process_memory(const char *stage) {
+    u64 total = 0;
+    u64 used = 0;
+    const AppletType applet_type = appletGetAppletType();
+    const Result total_result = svcGetInfo(
+        &total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    const Result used_result = svcGetInfo(
+        &used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
+    std::printf("NXGALLERY_DIAGNOSTIC event=startup_memory stage=%s result=%s applet_type=%u total=%llu used=%llu\n",
+                stage, R_SUCCEEDED(total_result) && R_SUCCEEDED(used_result) ? "pass" : "fail",
+                static_cast<unsigned int>(applet_type),
+                static_cast<unsigned long long>(total),
+                static_cast<unsigned long long>(used));
+}
 
 void render_outline(pu::ui::render::Renderer::Ref &drawer, pu::ui::Color color,
                     std::int32_t x, std::int32_t y, std::int32_t width,
@@ -148,6 +288,31 @@ std::string playback_time(std::uint64_t milliseconds) {
         (remainder < 10 ? "0" : "") + std::to_string(remainder);
 }
 
+std::string playback_time_precise(std::uint64_t milliseconds) {
+    const std::uint64_t seconds = milliseconds / 1000U;
+    const std::uint64_t minutes = seconds / 60U;
+    const std::uint64_t remainder = seconds % 60U;
+    const std::uint64_t millis = milliseconds % 1000U;
+    char value[32]{};
+    std::snprintf(value, sizeof(value), "%llu:%02llu.%03llu",
+                  static_cast<unsigned long long>(minutes),
+                  static_cast<unsigned long long>(remainder),
+                  static_cast<unsigned long long>(millis));
+    return value;
+}
+
+std::string playback_delta(std::int64_t milliseconds) {
+    const bool negative = milliseconds < 0;
+    const std::uint64_t magnitude = negative ?
+        static_cast<std::uint64_t>(-(milliseconds + 1)) + 1U :
+        static_cast<std::uint64_t>(milliseconds);
+    char value[32]{};
+    std::snprintf(value, sizeof(value), "%c%llu.%03llus", negative ? '-' : '+',
+                  static_cast<unsigned long long>(magnitude / 1000U),
+                  static_cast<unsigned long long>(magnitude % 1000U));
+    return value;
+}
+
 pu::ui::Color with_opacity(pu::ui::Color color, double opacity) {
     color.a = static_cast<std::uint8_t>(color.a * std::clamp(opacity, 0.0, 1.0));
     return color;
@@ -168,7 +333,10 @@ public:
                    std::string &update_notice, bool &update_available,
                    bool &update_installing,
                    std::atomic<std::uint64_t> &update_current,
-                   std::atomic<std::uint64_t> &update_total)
+                   std::atomic<std::uint64_t> &update_total,
+                   bool &group_by_date, std::int32_t &grouped_scroll_y,
+                   std::int32_t &scrub_direction, std::int64_t &scrub_offset_ms,
+                   bool constrained_applet)
         : controller_(controller), status_(status), video_player_(video_player),
           transfer_current_(transfer_current), transfer_total_(transfer_total),
           transfer_cancel_requested_(transfer_cancel_requested),
@@ -178,10 +346,20 @@ public:
           update_notice_active_(update_notice_active),
           update_notice_(update_notice), update_available_(update_available),
           update_installing_(update_installing),
-          update_current_(update_current), update_total_(update_total) {
+          update_current_(update_current), update_total_(update_total),
+          group_by_date_(group_by_date), grouped_scroll_y_(grouped_scroll_y),
+          scrub_direction_(scrub_direction), scrub_offset_ms_(scrub_offset_ms),
+          thumbnail_cache_pages_(constrained_applet ?
+              kConstrainedThumbnailCachePages : kThumbnailCachePages),
+          maximum_thumbnail_textures_(kThumbnailPageSize * thumbnail_cache_pages_),
+          maximum_image_textures_(constrained_applet ?
+              kConstrainedImageTextures : kMaximumImageTextures) {
         thumbnail_states_.resize(controller_.media().size(), ThumbnailState::Unloaded);
         thumbnail_slots_.reserve(std::min(controller_.media().size(),
-                                          kMaximumThumbnailTextures));
+                                          maximum_thumbnail_textures_));
+        std::printf("NXGALLERY_DIAGNOSTIC event=texture_budget constrained=%s thumbnails=%zu images=%zu\n",
+                    constrained_applet ? "true" : "false",
+                    maximum_thumbnail_textures_, maximum_image_textures_);
     }
 
     ~GalleryElement() override { clear_textures(); }
@@ -310,7 +488,7 @@ private:
             }
             thumbnail_slots_.clear();
             thumbnail_states_.assign(media.size(), ThumbnailState::Unloaded);
-            thumbnail_slots_.reserve(std::min(media.size(), kMaximumThumbnailTextures));
+            thumbnail_slots_.reserve(std::min(media.size(), maximum_thumbnail_textures_));
         }
         if (media.empty()) return;
 
@@ -319,14 +497,14 @@ private:
         const std::size_t current_page =
             controller_.grid_page_start() / kThumbnailPageSize;
         const std::size_t maximum_first_page =
-            page_count > kThumbnailCachePages ? page_count - kThumbnailCachePages : 0;
+            page_count > thumbnail_cache_pages_ ? page_count - thumbnail_cache_pages_ : 0;
         const std::size_t preferred_first_page =
             current_page > 0 ? current_page - 1 : 0;
         const std::size_t first_page =
             std::min(preferred_first_page, maximum_first_page);
         const std::size_t first_index = first_page * kThumbnailPageSize;
         const std::size_t end_index =
-            std::min(media.size(), first_index + kMaximumThumbnailTextures);
+            std::min(media.size(), first_index + maximum_thumbnail_textures_);
 
         auto slot = thumbnail_slots_.begin();
         while (slot != thumbnail_slots_.end()) {
@@ -541,7 +719,7 @@ private:
         auto found = std::find_if(image_slots_.begin(), image_slots_.end(),
                                   [&resolved_path](const ImageSlot &slot) { return slot.path == resolved_path; });
         if (found != image_slots_.end()) return found->texture;
-        if (image_slots_.size() >= 16) {
+        if (image_slots_.size() >= maximum_image_textures_) {
             pu::ui::render::DeleteTexture(image_slots_.front().texture);
             image_slots_.erase(image_slots_.begin());
         }
@@ -580,6 +758,109 @@ private:
                                     x, button_row_y, width, 1);
     }
 
+    void render_grid_cell(pu::ui::render::Renderer::Ref &drawer,
+                          std::size_t index, std::int32_t x, std::int32_t y) {
+        const auto &media = controller_.media();
+        drawer->RenderRectangleFill(kBlack, x, y, kCellWidth, kCellHeight);
+        fitted_image(drawer, thumbnail(index), x, y, kCellWidth, kCellHeight,
+                     thumbnail_alpha(index));
+        if (media[index].kind == MediaKind::Video) {
+            drawer->RenderRoundedRectangleFill({0, 0, 0, 170},
+                                               x + kCellWidth - 58,
+                                               y + kCellHeight - 32, 50, 24, 4);
+            text(drawer, "▶", 16, kWhite,
+                 x + kCellWidth - 45, y + kCellHeight - 30);
+        }
+        if (!controller_.multi_select_active()) return;
+        const bool marked = controller_.is_media_selected(index);
+        if (marked) {
+            render_outline(drawer, kAccent, x + 2, y + 2,
+                           kCellWidth - 4, kCellHeight - 4, 5);
+        }
+        drawer->RenderRoundedRectangleFill(
+            marked ? kAccent : pu::ui::Color{0, 0, 0, 150},
+            x + 12, y + 12, 32, 32, 16);
+        render_outline(drawer, kWhite, x + 18, y + 18, 20, 20, 2);
+        if (marked) drawer->RenderRectangleFill(kWhite, x + 22, y + 22, 12, 12);
+    }
+
+    void render_grid_selection(pu::ui::render::Renderer::Ref &drawer,
+                               std::int32_t x, std::int32_t y) {
+        render_outline(drawer, kWhite, x - 3, y - 3,
+                       kCellWidth + 6, kCellHeight + 6, 3);
+        render_outline(drawer, pulse_color(), x - 9, y - 9,
+                       kCellWidth + 18, kCellHeight + 18, 6);
+    }
+
+    const GroupedGridLayout &current_grouped_layout() {
+        const auto &media = controller_.media();
+        const std::int64_t first_time = media.empty() ? 0 : media.front().modified_time;
+        const std::int64_t last_time = media.empty() ? 0 : media.back().modified_time;
+        if (grouped_layout_media_size_ != media.size() ||
+            grouped_layout_first_time_ != first_time ||
+            grouped_layout_last_time_ != last_time) {
+            grouped_layout_ = grouped_grid_layout(media);
+            grouped_layout_media_size_ = media.size();
+            grouped_layout_first_time_ = first_time;
+            grouped_layout_last_time_ = last_time;
+        }
+        return grouped_layout_;
+    }
+
+    void render_grouped_grid(pu::ui::render::Renderer::Ref &drawer) {
+        const GroupedGridLayout &layout = current_grouped_layout();
+        ensure_grouped_visible(layout, controller_.selected_media_index(), grouped_scroll_y_);
+        for (const GroupedHeaderPosition &header : layout.headers) {
+            const std::int32_t y = kGridY + header.virtual_y - grouped_scroll_y_;
+            if (y < kGridY || y + 26 > kFooterRuleY) continue;
+            text(drawer, header.label, 18, kMuted, kGridX, y + 5);
+            drawer->RenderRectangleFill(kDialogRule, kGridX + 300, y + 17,
+                                        kWidth - kGridX - 340, 1);
+        }
+        for (const GroupedItemPosition &item : layout.items) {
+            const std::int32_t y = kGridY + item.virtual_y - grouped_scroll_y_;
+            if (y < kGridY || y + kCellHeight > kFooterRuleY) continue;
+            render_grid_cell(drawer, item.media_index,
+                             kGridX + item.column * kCellStrideX, y);
+        }
+        const GroupedItemPosition *selected = grouped_item(
+            layout, controller_.selected_media_index());
+        if (selected == nullptr) return;
+        const std::int32_t y = kGridY + selected->virtual_y - grouped_scroll_y_;
+        if (y >= kGridY && y + kCellHeight <= kFooterRuleY) {
+            render_grid_selection(drawer,
+                                  kGridX + selected->column * kCellStrideX, y);
+        }
+    }
+
+    void render_flat_grid(pu::ui::render::Renderer::Ref &drawer) {
+        const auto &media = controller_.media();
+        const std::size_t start = controller_.grid_page_start();
+        for (std::size_t visible = 0;
+             visible < GalleryController::kGridColumns * GalleryController::kVisibleRows;
+             ++visible) {
+            const std::size_t index = start + visible;
+            if (index >= media.size()) break;
+            const std::int32_t column = static_cast<std::int32_t>(
+                visible % GalleryController::kGridColumns);
+            const std::int32_t row = static_cast<std::int32_t>(
+                visible / GalleryController::kGridColumns);
+            render_grid_cell(drawer, index, kGridX + column * kCellStrideX,
+                             kGridY + row * kCellStrideY);
+        }
+        const std::size_t selected = controller_.selected_media_index();
+        if (media.empty() || selected < start ||
+            selected >= start + GalleryController::kGridColumns *
+                              GalleryController::kVisibleRows) return;
+        const std::size_t visible = selected - start;
+        render_grid_selection(
+            drawer,
+            kGridX + static_cast<std::int32_t>(
+                visible % GalleryController::kGridColumns) * kCellStrideX,
+            kGridY + static_cast<std::int32_t>(
+                visible / GalleryController::kGridColumns) * kCellStrideY);
+    }
+
     void render_grid(pu::ui::render::Renderer::Ref &drawer) {
         drawer->RenderRectangleFill(kBackground, 0, 0, kWidth, kHeight);
         text(drawer, controller_.multi_select_active() ? "Select captures" : "Album",
@@ -607,54 +888,8 @@ private:
             text_center(drawer, "Captures taken with the Capture Button will appear here.",
                         18, kMuted, kWidth / 2, 366);
         }
-        const std::size_t start = controller_.grid_page_start();
-        for (std::size_t visible = 0;
-             visible < GalleryController::kGridColumns * GalleryController::kVisibleRows;
-             ++visible) {
-            const std::size_t index = start + visible;
-            if (index >= media.size()) break;
-            const std::int32_t column = static_cast<std::int32_t>(visible % GalleryController::kGridColumns);
-            const std::int32_t row = static_cast<std::int32_t>(visible / GalleryController::kGridColumns);
-            const std::int32_t x = kGridX + column * kCellStrideX;
-            const std::int32_t y = kGridY + row * kCellStrideY;
-            drawer->RenderRectangleFill(kBlack, x, y, kCellWidth, kCellHeight);
-            fitted_image(drawer, thumbnail(index), x, y, kCellWidth, kCellHeight,
-                         thumbnail_alpha(index));
-            if (media[index].kind == MediaKind::Video) {
-                drawer->RenderRoundedRectangleFill({0, 0, 0, 170}, x + kCellWidth - 58,
-                                                   y + kCellHeight - 32, 50, 24, 4);
-                text(drawer, "▶", 16, kWhite, x + kCellWidth - 45, y + kCellHeight - 30);
-            }
-            if (controller_.multi_select_active()) {
-                const bool marked = controller_.is_media_selected(index);
-                if (marked) {
-                    render_outline(drawer, kAccent, x + 2, y + 2,
-                                   kCellWidth - 4, kCellHeight - 4, 5);
-                }
-                drawer->RenderRoundedRectangleFill(
-                    marked ? kAccent : pu::ui::Color{0, 0, 0, 150},
-                    x + 12, y + 12, 32, 32, 16);
-                render_outline(drawer, kWhite, x + 18, y + 18, 20, 20, 2);
-                if (marked) {
-                    drawer->RenderRectangleFill(kWhite, x + 22, y + 22, 12, 12);
-                }
-            }
-        }
-        // Drawn after every cell so the thick border is never clipped by a
-        // neighbouring thumbnail.
-        const std::size_t selected = controller_.selected_media_index();
-        if (!media.empty() && selected >= start &&
-            selected < start + GalleryController::kGridColumns * GalleryController::kVisibleRows) {
-            const std::size_t visible = selected - start;
-            const std::int32_t x = kGridX +
-                static_cast<std::int32_t>(visible % GalleryController::kGridColumns) * kCellStrideX;
-            const std::int32_t y = kGridY +
-                static_cast<std::int32_t>(visible / GalleryController::kGridColumns) * kCellStrideY;
-            render_outline(drawer, kWhite, x - 3, y - 3,
-                           kCellWidth + 6, kCellHeight + 6, 3);
-            render_outline(drawer, pulse_color(), x - 9, y - 9,
-                           kCellWidth + 18, kCellHeight + 18, 6);
-        }
+        if (group_by_date_) render_grouped_grid(drawer);
+        else render_flat_grid(drawer);
         std::vector<HintItem> grid_hints;
         if (update_available_) {
             hints(drawer, {{" Update", HintTag::Update, 0}},
@@ -664,6 +899,8 @@ private:
         grid_hints.push_back({controller_.multi_select_active() ? " Select" : " View",
                               HintTag::View, 36});
         grid_hints.push_back({" Share", HintTag::Share, 36});
+        grid_hints.push_back({group_by_date_ ? " Ungroup" : " Group",
+                              HintTag::GroupDate, 36});
         grid_hints.push_back({controller_.multi_select_active() ? " Done" : " Select",
                               HintTag::MultiSelect, 0});
         hints(drawer, grid_hints,
@@ -820,18 +1057,35 @@ private:
         if (video_selected && controller_.screen() == Screen::Viewer) {
             const std::uint64_t position = video_player_.position_ms();
             const std::uint64_t duration = video_player_.duration_ms();
+            const bool scrub_preview = scrub_direction_ != 0;
+            std::uint64_t timeline_position = std::min(position, duration);
+            if (scrub_preview) {
+                const std::int64_t bounded_duration = static_cast<std::int64_t>(
+                    std::min<std::uint64_t>(duration,
+                        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
+                const std::int64_t bounded_position = static_cast<std::int64_t>(
+                    std::min<std::uint64_t>(position,
+                        static_cast<std::uint64_t>(bounded_duration)));
+                timeline_position = static_cast<std::uint64_t>(std::clamp(
+                    bounded_position + scrub_offset_ms_, std::int64_t{0},
+                    bounded_duration));
+            }
             drawer->RenderRoundedRectangleFill({255, 255, 255, 60}, kTimelineX,
                                                kTimelineY, kTimelineWidth, 8, 4);
-            if (duration > 0 && position > 0) {
+            if (duration > 0 && timeline_position > 0) {
                 const std::int32_t fill_width = std::max<std::int32_t>(
                     8, static_cast<std::int32_t>(
-                        std::min<std::uint64_t>(duration, position) * kTimelineWidth /
+                        std::min<std::uint64_t>(duration, timeline_position) * kTimelineWidth /
                         duration));
                 drawer->RenderRoundedRectangleFill(kAccent, kTimelineX, kTimelineY,
                                                    fill_width, 8, 4);
             }
-            text_right(drawer, playback_time(position) + " / " + playback_time(duration),
-                       18, kWhite, kWidth - 40, 626);
+            const std::string timeline_label = scrub_preview ?
+                "Scrub " + playback_time_precise(timeline_position) + " (" +
+                    playback_delta(scrub_offset_ms_) + ") / " +
+                    playback_time_precise(duration) :
+                playback_time(position) + " / " + playback_time(duration);
+            text_right(drawer, timeline_label, 18, kWhite, kWidth - 40, 626);
             const std::string playback_status = video_player_.status();
             if (!playback_status.empty()) {
                 text(drawer, clipped(playback_status, 72), 17, kOverlayInk, 40, 600);
@@ -988,11 +1242,22 @@ private:
     bool &update_installing_;
     std::atomic<std::uint64_t> &update_current_;
     std::atomic<std::uint64_t> &update_total_;
+    bool &group_by_date_;
+    std::int32_t &grouped_scroll_y_;
+    std::int32_t &scrub_direction_;
+    std::int64_t &scrub_offset_ms_;
+    std::size_t thumbnail_cache_pages_{};
+    std::size_t maximum_thumbnail_textures_{};
+    std::size_t maximum_image_textures_{};
     std::vector<TextSlot> text_slots_;
     std::vector<ImageSlot> image_slots_;
     std::vector<ThumbnailSlot> thumbnail_slots_;
     std::vector<ThumbnailState> thumbnail_states_;
     std::vector<HintZone> hint_zones_;
+    GroupedGridLayout grouped_layout_;
+    std::size_t grouped_layout_media_size_{std::numeric_limits<std::size_t>::max()};
+    std::int64_t grouped_layout_first_time_{};
+    std::int64_t grouped_layout_last_time_{};
     std::string qr_key_;
     std::vector<std::uint8_t> qr_modules_;
     int qr_size_{};
@@ -1018,11 +1283,13 @@ GalleryApplication::GalleryApplication(pu::ui::render::Renderer::Ref renderer,
                                        std::string telegram_status,
                                        bool telegram_token_present,
                                        bool release_updates_enabled,
+                                       bool constrained_applet,
                                        std::string installed_nro_path)
     : Application(std::move(renderer)), bot_(std::move(bot)),
       status_(std::move(telegram_status)),
       telegram_token_present_(telegram_token_present),
       release_updates_enabled_(release_updates_enabled),
+      constrained_applet_(constrained_applet),
       installed_nro_path_(std::move(installed_nro_path)) {
     controller_.set_media(std::move(album.items));
     if (!album.error.empty()) status_ = album.error;
@@ -1050,7 +1317,10 @@ void GalleryApplication::OnLoad() {
                                                 album_loading_,
                                                 update_notice_active_, update_notice_,
                                                 update_available_, update_installing_,
-                                                update_current_, update_total_);
+                                                update_current_, update_total_,
+                                                group_by_date_, grouped_scroll_y_,
+                                                scrub_direction_, scrub_offset_ms_,
+                                                constrained_applet_);
     layout_->Add(element_);
     LoadLayout(layout_);
     SetOnInput([this](const u64 down, const u64, const u64 held, const pu::ui::TouchPoint touch) {
@@ -1068,18 +1338,28 @@ void GalleryApplication::OnLoad() {
         poll_token_setup();
         poll_album_scan();
         poll_release_update();
+        start_deferred_background_work();
         advance_automation();
     });
     if (bot_) {
         std::vector<TelegramChat> cached;
         bot_->cached_chats(cached);
         controller_.set_chats(std::move(cached));
-        start_chat_refresh();
     } else if (!telegram_token_present_) {
         open_token_setup(true);
     }
     start_album_scan();
+    if (!constrained_applet_) start_deferred_background_work();
+}
+
+void GalleryApplication::start_deferred_background_work() {
+    if (background_work_started_) return;
+    if (constrained_applet_ &&
+        (++startup_render_frames_ < 30 || album_loading_)) return;
+    background_work_started_ = true;
+    if (bot_) start_chat_refresh();
     start_release_check();
+    report_process_memory("background_started");
 }
 
 void GalleryApplication::start_release_check() {
@@ -1087,12 +1367,17 @@ void GalleryApplication::start_release_check() {
     return;
 #endif
     if (!release_updates_enabled_ || update_worker_.joinable()) return;
-    update_worker_ = std::thread([this] {
-        UpdateResult result = check_latest_release(
-            NXGALLERY_VERSION, &update_cancel_requested_);
-        std::lock_guard<std::mutex> lock(update_mutex_);
-        update_result_ = std::move(result);
-    });
+    try {
+        update_worker_ = std::thread([this] {
+            UpdateResult result = check_latest_release(
+                NXGALLERY_VERSION, &update_cancel_requested_);
+            std::lock_guard<std::mutex> lock(update_mutex_);
+            update_result_ = std::move(result);
+        });
+    } catch (const std::exception &error) {
+        std::printf("NXGALLERY_DIAGNOSTIC event=release_update outcome=start_failed message=%s\n",
+                    error.what());
+    }
 }
 
 void GalleryApplication::start_release_install() {
@@ -1149,19 +1434,26 @@ void GalleryApplication::start_album_scan() {
     if (album_worker_.joinable() || !controller_.media().empty()) return;
     album_loading_ = true;
     if (controller_.media().empty() && status_.empty()) status_ = "Loading captures...";
-    album_worker_ = std::thread([this] {
+    try {
+        album_worker_ = std::thread([this] {
 #ifdef NXGALLERY_AUTOMATION_BUILD
-        AlbumScanResult album = scan_album(kRawAlbumPath);
+            AlbumScanResult album = scan_album(kRawAlbumPath);
 #else
-        AlbumScanResult album = scan_horizon_album();
-        if (!album || album.items.empty()) {
-            AlbumScanResult raw_album = scan_album(kRawAlbumPath);
-            if (raw_album && !raw_album.items.empty()) album = std::move(raw_album);
-        }
+            AlbumScanResult album = scan_horizon_album();
+            if (!album || album.items.empty()) {
+                AlbumScanResult raw_album = scan_album(kRawAlbumPath);
+                if (raw_album && !raw_album.items.empty()) album = std::move(raw_album);
+            }
 #endif
-        std::lock_guard<std::mutex> lock(album_mutex_);
-        album_result_ = std::move(album);
-    });
+            std::lock_guard<std::mutex> lock(album_mutex_);
+            album_result_ = std::move(album);
+        });
+    } catch (const std::exception &error) {
+        album_loading_ = false;
+        status_ = "Could not start Album scan";
+        std::printf("NXGALLERY_DIAGNOSTIC event=album_scan state=start_failed message=%s\n",
+                    error.what());
+    }
 }
 
 void GalleryApplication::poll_album_scan() {
@@ -1206,6 +1498,7 @@ void GalleryApplication::advance_automation() {
     } else if ((automation_frame_ == 360 || automation_frame_ == 380 ||
                 automation_frame_ == 400) &&
                controller_.screen() == Screen::Viewer) {
+        cancel_video_scrub();
         video_player_->stop();
         controller_.handle(automation_frame_ == 400 ? Action::Right : Action::Left);
         const auto &media = controller_.media();
@@ -1235,6 +1528,7 @@ void GalleryApplication::advance_automation() {
 }
 
 void GalleryApplication::open_chat_picker() {
+    cancel_video_scrub();
     if (video_player_) video_player_->stop();
     if (!bot_) status_ = "Telegram is not configured";
     controller_.handle(Action::Share);
@@ -1276,13 +1570,19 @@ void GalleryApplication::start_share(ShareRequest request) {
 
 void GalleryApplication::start_chat_refresh() {
     if (!bot_ || chat_refresh_worker_.joinable()) return;
-    chat_refresh_worker_ = std::thread([this] {
-        std::vector<TelegramChat> chats;
-        BotResult result = bot_->refresh_chats(chats);
-        std::lock_guard<std::mutex> lock(chat_refresh_mutex_);
-        refreshed_chats_ = std::move(chats);
-        chat_refresh_result_ = std::move(result);
-    });
+    try {
+        chat_refresh_worker_ = std::thread([this] {
+            std::vector<TelegramChat> chats;
+            BotResult result = bot_->refresh_chats(chats);
+            std::lock_guard<std::mutex> lock(chat_refresh_mutex_);
+            refreshed_chats_ = std::move(chats);
+            chat_refresh_result_ = std::move(result);
+        });
+    } catch (const std::exception &error) {
+        status_ = "Could not start Telegram refresh";
+        std::printf("NXGALLERY_DIAGNOSTIC event=chat_refresh state=start_failed message=%s\n",
+                    error.what());
+    }
 }
 
 void GalleryApplication::poll_chat_refresh() {
@@ -1320,12 +1620,128 @@ void GalleryApplication::toggle_video_playback() {
     else video_player_->play(media[controller_.selected_media_index()]);
 }
 
+void GalleryApplication::update_video_scrub(std::int32_t direction) {
+    if (direction == 0 || !video_player_ || !video_player_->active()) {
+        cancel_video_scrub();
+        return;
+    }
+    if (scrub_direction_ != 0 && scrub_direction_ != direction) {
+        commit_video_scrub();
+    }
+    if (scrub_direction_ == 0) {
+        scrub_direction_ = direction;
+        scrub_hold_frames_ = 0;
+        scrub_offset_ms_ = 0;
+    }
+
+    if (scrub_hold_frames_ <=
+        std::numeric_limits<std::uint32_t>::max() - kScrubHoldFrameStep) {
+        scrub_hold_frames_ += kScrubHoldFrameStep;
+    }
+    const std::uint64_t ramp_frames = scrub_hold_frames_;
+    const std::int64_t increment_ms = std::min<std::int64_t>(
+        kScrubMaxIncrementMs,
+        kScrubBaseIncrementMs + static_cast<std::int64_t>(
+            ramp_frames * ramp_frames / kScrubRampDivisor));
+
+    const std::uint64_t raw_duration = video_player_->duration_ms();
+    const std::int64_t duration = static_cast<std::int64_t>(
+        std::min<std::uint64_t>(raw_duration,
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())));
+    const std::int64_t position = static_cast<std::int64_t>(
+        std::min<std::uint64_t>(video_player_->position_ms(),
+            static_cast<std::uint64_t>(duration)));
+    scrub_offset_ms_ = std::clamp(
+        scrub_offset_ms_ + direction * increment_ms, -position, duration - position);
+}
+
+void GalleryApplication::commit_video_scrub() {
+    if (scrub_direction_ == 0) return;
+    const std::int64_t committed_offset_ms = scrub_offset_ms_;
+    if (video_player_) video_player_->seek_relative(committed_offset_ms);
+    scrub_direction_ = 0;
+    scrub_hold_frames_ = 0;
+    scrub_offset_ms_ = 0;
+}
+
+void GalleryApplication::cancel_video_scrub() {
+    scrub_direction_ = 0;
+    scrub_hold_frames_ = 0;
+    scrub_offset_ms_ = 0;
+}
+
+bool GalleryApplication::move_grouped_grid(Action action) {
+    if (!group_by_date_ || controller_.screen() != Screen::Grid ||
+        controller_.media().empty()) return false;
+    const GroupedGridLayout layout = grouped_grid_layout(controller_.media());
+    const GroupedItemPosition *current = grouped_item(
+        layout, controller_.selected_media_index());
+    if (current == nullptr) return true;
+    if (action == Action::Left || action == Action::Right) {
+        const std::size_t index = current->media_index;
+        if (action == Action::Left && index > 0) controller_.select_media(index - 1);
+        if (action == Action::Right && index + 1 < controller_.media().size()) {
+            controller_.select_media(index + 1);
+        }
+        ensure_grouped_visible(layout, controller_.selected_media_index(), grouped_scroll_y_);
+        return true;
+    }
+    if (action != Action::Up && action != Action::Down) return false;
+
+    std::int32_t target_y = action == Action::Up ?
+        std::numeric_limits<std::int32_t>::min() :
+        std::numeric_limits<std::int32_t>::max();
+    for (const GroupedItemPosition &candidate : layout.items) {
+        if (action == Action::Up && candidate.virtual_y < current->virtual_y) {
+            target_y = std::max(target_y, candidate.virtual_y);
+        } else if (action == Action::Down && candidate.virtual_y > current->virtual_y) {
+            target_y = std::min(target_y, candidate.virtual_y);
+        }
+    }
+    if (target_y == std::numeric_limits<std::int32_t>::min() ||
+        target_y == std::numeric_limits<std::int32_t>::max()) return true;
+    const GroupedItemPosition *best = nullptr;
+    for (const GroupedItemPosition &candidate : layout.items) {
+        if (candidate.virtual_y != target_y) continue;
+        if (best == nullptr || std::abs(candidate.column - current->column) <
+                               std::abs(best->column - current->column)) {
+            best = &candidate;
+        }
+    }
+    if (best != nullptr) controller_.select_media(best->media_index);
+    ensure_grouped_visible(layout, controller_.selected_media_index(), grouped_scroll_y_);
+    return true;
+}
+
 void GalleryApplication::on_swipe(std::int32_t dx, std::int32_t dy) {
     if (setup_active_) return;
     const bool vertical = std::abs(dy) >= std::abs(dx);
     if (controller_.screen() == Screen::Grid && vertical) {
         const auto &media = controller_.media();
         if (media.empty()) return;
+        if (group_by_date_) {
+            const GroupedGridLayout layout = grouped_grid_layout(media);
+            const GroupedItemPosition *current = grouped_item(
+                layout, controller_.selected_media_index());
+            if (current == nullptr) return;
+            const std::int32_t target_y = current->virtual_y +
+                (dy < 0 ? kGroupedViewportHeight : -kGroupedViewportHeight);
+            const GroupedItemPosition *best = current;
+            std::int32_t best_distance = std::numeric_limits<std::int32_t>::max();
+            for (const GroupedItemPosition &candidate : layout.items) {
+                if ((dy < 0 && candidate.virtual_y <= current->virtual_y) ||
+                    (dy > 0 && candidate.virtual_y >= current->virtual_y)) continue;
+                const std::int32_t distance = std::abs(candidate.virtual_y - target_y) * 8 +
+                    std::abs(candidate.column - current->column);
+                if (distance < best_distance) {
+                    best_distance = distance;
+                    best = &candidate;
+                }
+            }
+            controller_.select_media(best->media_index);
+            ensure_grouped_visible(layout, best->media_index, grouped_scroll_y_);
+            return;
+        }
         constexpr std::size_t page =
             GalleryController::kGridColumns * GalleryController::kVisibleRows;
         const std::size_t index = controller_.selected_media_index();
@@ -1334,6 +1750,7 @@ void GalleryApplication::on_swipe(std::int32_t dx, std::int32_t dy) {
         return;
     }
     if (controller_.screen() == Screen::Viewer && !vertical) {
+        cancel_video_scrub();
         if (video_player_) video_player_->stop();
         controller_.handle(dx < 0 ? Action::Right : Action::Left);
         return;
@@ -1359,6 +1776,7 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
         case HintTag::PlayPause: toggle_video_playback(); break;
         case HintTag::Prev:
         case HintTag::Next:
+            cancel_video_scrub();
             if (video_player_) video_player_->stop();
             controller_.handle(*tag == HintTag::Prev ? Action::Left : Action::Right);
             break;
@@ -1366,8 +1784,13 @@ bool GalleryApplication::dispatch_hint(pu::ui::TouchPoint touch) {
         case HintTag::MultiSelect:
             controller_.handle(Action::ToggleMultiSelect);
             break;
+        case HintTag::GroupDate:
+            group_by_date_ = !group_by_date_;
+            grouped_scroll_y_ = 0;
+            break;
         case HintTag::Update: start_release_install(); break;
         case HintTag::Back:
+            cancel_video_scrub();
             if (video_player_) video_player_->stop();
             controller_.handle(Action::Back);
             break;
@@ -1394,6 +1817,22 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
         return;
     }
     if (controller_.screen() == Screen::Grid) {
+        if (group_by_date_) {
+            const GroupedGridLayout layout = grouped_grid_layout(controller_.media());
+            ensure_grouped_visible(layout, controller_.selected_media_index(),
+                                   grouped_scroll_y_);
+            for (const GroupedItemPosition &item : layout.items) {
+                const std::int32_t y = kGridY + item.virtual_y - grouped_scroll_y_;
+                if (y < kGridY || y + kCellHeight > kFooterRuleY) continue;
+                if (touch.HitsRegion(kGridX + item.column * kCellStrideX, y,
+                                     kCellWidth, kCellHeight)) {
+                    controller_.select_media(item.media_index);
+                    controller_.handle(Action::Confirm);
+                    return;
+                }
+            }
+            return;
+        }
         const std::size_t start = controller_.grid_page_start();
         for (std::size_t visible = 0;
              visible < GalleryController::kGridColumns * GalleryController::kVisibleRows;
@@ -1456,6 +1895,7 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
 
 void GalleryApplication::open_token_setup(bool fullscreen) {
     if (setup_active_) return;
+    cancel_video_scrub();
     if (video_player_) video_player_->stop();
     setup_fullscreen_ = fullscreen;
     if (fullscreen) {
@@ -1633,8 +2073,8 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     }
     const std::uint64_t dpad_horizontal_fire = direction_fire &
         (HidNpadButton_Left | HidNpadButton_Right);
-    const std::uint64_t left_stick_horizontal_fire = direction_fire &
-        (HidNpadButton_StickLLeft | HidNpadButton_StickLRight);
+    const std::uint64_t raw_right_stick_horizontal = (down | held) &
+        (HidNpadButton_StickRLeft | HidNpadButton_StickRRight);
     const std::uint64_t any_horizontal_fire = direction_fire &
         (HidNpadButton_Left | HidNpadButton_Right |
          HidNpadButton_StickLLeft | HidNpadButton_StickLRight |
@@ -1679,27 +2119,37 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     if (controller_.screen() == Screen::Viewer &&
         !controller_.media().empty() &&
         controller_.media()[controller_.selected_media_index()].kind == MediaKind::Video) {
+        const bool scrub_left =
+            (raw_right_stick_horizontal & HidNpadButton_StickRLeft) != 0;
+        const bool scrub_right =
+            (raw_right_stick_horizontal & HidNpadButton_StickRRight) != 0;
+        const std::int32_t scrub_direction = scrub_left == scrub_right ? 0 :
+            (scrub_left ? -1 : 1);
         if ((down & HidNpadButton_A) != 0) {
+            if ((down & HidNpadButton_B) == 0 && dpad_horizontal_fire == 0 &&
+                scrub_direction_ != 0 && scrub_direction != scrub_direction_) {
+                commit_video_scrub();
+            }
             toggle_video_playback();
             return;
         }
         if ((down & HidNpadButton_B) != 0 ||
             dpad_horizontal_fire != 0) {
+            cancel_video_scrub();
             video_player_->stop();
-        }
-        if ((down & HidNpadButton_B) == 0 && dpad_horizontal_fire == 0 &&
-            left_stick_horizontal_fire != 0) {
-            if (video_player_->active() && !video_player_->paused()) {
-                constexpr std::int64_t kSeekStepMs = 5000;
-                video_player_->seek_relative(
-                    (left_stick_horizontal_fire & HidNpadButton_StickLLeft) != 0
-                        ? -kSeekStepMs : kSeekStepMs);
+        } else {
+            if (scrub_direction_ != 0 && scrub_direction != scrub_direction_) {
+                commit_video_scrub();
             }
-            return;
+            if (scrub_direction != 0) {
+                update_video_scrub(scrub_direction);
+                return;
+            }
+            if (raw_right_stick_horizontal != 0) return;
         }
         if (dpad_horizontal_fire == 0 &&
             (any_horizontal_fire &
-             (HidNpadButton_StickRLeft | HidNpadButton_StickRRight)) != 0) {
+             (HidNpadButton_StickLLeft | HidNpadButton_StickLRight)) != 0) {
             return;
         }
     }
@@ -1710,7 +2160,8 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         return;
     }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::Grid) {
-        open_token_setup();
+        group_by_date_ = !group_by_date_;
+        grouped_scroll_y_ = 0;
         return;
     }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::ChatPicker) {
@@ -1722,12 +2173,20 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
     else if ((down & HidNpadButton_B) != 0) controller_.handle(Action::Back);
     else if ((any_horizontal_fire &
               (HidNpadButton_Left | HidNpadButton_StickLLeft |
-               HidNpadButton_StickRLeft)) != 0) controller_.handle(Action::Left);
+               HidNpadButton_StickRLeft)) != 0) {
+        if (!move_grouped_grid(Action::Left)) controller_.handle(Action::Left);
+    }
     else if ((any_horizontal_fire &
               (HidNpadButton_Right | HidNpadButton_StickLRight |
-               HidNpadButton_StickRRight)) != 0) controller_.handle(Action::Right);
-    else if ((direction_fire & HidNpadButton_AnyUp) != 0) controller_.handle(Action::Up);
-    else if ((direction_fire & HidNpadButton_AnyDown) != 0) controller_.handle(Action::Down);
+               HidNpadButton_StickRRight)) != 0) {
+        if (!move_grouped_grid(Action::Right)) controller_.handle(Action::Right);
+    }
+    else if ((direction_fire & HidNpadButton_AnyUp) != 0) {
+        if (!move_grouped_grid(Action::Up)) controller_.handle(Action::Up);
+    }
+    else if ((direction_fire & HidNpadButton_AnyDown) != 0) {
+        if (!move_grouped_grid(Action::Down)) controller_.handle(Action::Down);
+    }
     if (request) start_share(std::move(*request));
 }
 

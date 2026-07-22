@@ -27,6 +27,7 @@ public:
                        std::string telegram_status,
                        bool telegram_token_present,
                        bool release_updates_enabled,
+                       bool constrained_applet,
                        std::string installed_nro_path);
     ~GalleryApplication() override;
 
@@ -55,6 +56,11 @@ private:
     void start_release_check();
     void start_release_install();
     void poll_release_update();
+    void start_deferred_background_work();
+    bool move_grouped_grid(Action action);
+    void update_video_scrub(std::int32_t direction);
+    void commit_video_scrub();
+    void cancel_video_scrub();
     void advance_automation();
 
     GalleryController controller_;
@@ -92,6 +98,14 @@ private:
     bool telegram_token_present_{};
     bool album_loading_{};
     bool release_updates_enabled_{};
+    bool constrained_applet_{};
+    bool group_by_date_{};
+    std::int32_t grouped_scroll_y_{};
+    std::int32_t scrub_direction_{};
+    std::uint32_t scrub_hold_frames_{};
+    std::int64_t scrub_offset_ms_{};
+    std::uint32_t startup_render_frames_{};
+    bool background_work_started_{};
     bool update_available_{};
     bool update_installing_{};
     bool update_notice_active_{};
