@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -18,6 +19,13 @@
 #include <thread>
 
 namespace nxgallery {
+
+enum class GridScrollDriver {
+    Selection,
+    TouchDrag,
+    Momentum,
+    Free,
+};
 
 class GalleryApplication final : public pu::ui::Application {
 public:
@@ -57,7 +65,8 @@ private:
     void start_release_install();
     void poll_release_update();
     void start_deferred_background_work();
-    bool move_grouped_grid(Action action);
+    bool move_grid(Action action);
+    void toggle_grid_grouping();
     void update_video_scrub(std::int32_t direction);
     void commit_video_scrub();
     void cancel_video_scrub();
@@ -100,8 +109,11 @@ private:
     bool release_updates_enabled_{};
     bool constrained_applet_{};
     bool group_by_date_{};
-    double grouped_scroll_y_{};
-    double grouped_scroll_target_y_{};
+    double grid_scroll_y_{};
+    double grid_scroll_target_y_{};
+    double grid_scroll_velocity_y_{};
+    double grid_scroll_maximum_y_{};
+    GridScrollDriver grid_scroll_driver_{GridScrollDriver::Selection};
     std::int32_t scrub_direction_{};
     std::uint32_t scrub_hold_frames_{};
     std::int64_t scrub_offset_ms_{};
@@ -118,6 +130,11 @@ private:
     std::int32_t touch_start_y_{};
     std::int32_t touch_last_x_{};
     std::int32_t touch_last_y_{};
+    bool grid_touch_candidate_{};
+    bool grid_touch_dragging_{};
+    double grid_touch_start_scroll_y_{};
+    std::chrono::steady_clock::time_point touch_press_time_{};
+    std::chrono::steady_clock::time_point touch_sample_time_{};
     std::uint32_t automation_frame_{};
     bool automation_send_started_{};
     std::uint64_t automation_paused_frames_{};
