@@ -2,6 +2,11 @@
 
 NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled after the stock Album flow. On Horizon it enumerates both NAND and SD captures through the `caps:a` Album Accessor service; host tests and Ryujinx fixtures use the filesystem scanner. It presents a four-column capture grid and viewer, and shares one capture or an ordered selection through a Telegram bot after an explicit destination picker. Large selections are sent sequentially in Telegram batches of up to ten.
 
+<p align="center">
+  <img src="docs/images/nx-gallery-album.jpg" alt="NX Gallery Album capture grid" width="49%">
+  <img src="docs/images/telegram-share.jpg" alt="NX Gallery Telegram destination picker" width="49%">
+</p>
+
 ## Current prototype
 
 - Read-only Horizon Album Accessor enumeration with lazy photo/movie materialization; recursive JPEG, PNG, and MP4 scanning remains the host-test backend.
