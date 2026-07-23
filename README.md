@@ -1,88 +1,97 @@
 # NX Gallery
 
-NX Gallery is a Plutonium-based Nintendo Switch homebrew capture browser modeled after the stock Album flow. On Horizon it enumerates both NAND and SD captures through the `caps:a` Album Accessor service; host tests and Ryujinx fixtures use the filesystem scanner. It presents a four-column capture grid and viewer, and shares one capture or an ordered selection through a Telegram bot after an explicit destination picker. Large selections are sent sequentially in Telegram batches of up to ten.
+NX Gallery is a Nintendo Switch homebrew capture browser inspired by the
+console's Album app. Browse screenshots and videos from NAND or SD storage,
+play captured videos, and share selected media to Telegram.
+
+**[Download the latest release](https://github.com/LPFchan/nxgallery/releases/latest)**
 
 <p align="center">
-  <img src="docs/images/nx-gallery-album.jpg" alt="NX Gallery Album capture grid" width="49%">
+  <img src="docs/images/nx-gallery-album.jpg" alt="NX Gallery capture grid" width="49%">
   <img src="docs/images/telegram-share.jpg" alt="NX Gallery Telegram destination picker" width="49%">
 </p>
 
-## Current prototype
+## Features
 
-- Read-only Horizon Album Accessor enumeration with lazy photo/movie materialization; recursive JPEG, PNG, and MP4 scanning remains the host-test backend.
-- Stock-inspired grid, viewer, modal chat picker, sending state, and result dialog.
-- Controller and touchscreen targets for captures, Back, Share, chat rows, Send, and Cancel.
-- One asynchronous Telegram Bot API refresh at launch, plus configured and persisted destinations; opening Share reads the in-memory cache immediately.
-- `sendPhoto`, `sendVideo`, and mixed-media `sendMediaGroup` multipart uploads on a worker thread with colored whole-selection transfer progress and B-button cancellation; selections larger than ten are partitioned into ordered Bot API requests.
-- Bot tokens remain SD-card configuration and are never compiled or packaged.
-- Video captures use Album Accessor JPEG thumbnails. FFmpeg-backed playback includes AAC audio, pause/resume, elapsed progress, and five-second left-stick seeking.
+- Stock-Album-inspired capture grid and full-screen viewer.
+- Read-only access to NAND and SD captures through Horizon Album Accessor.
+- Controller-first interface with touch support throughout the main flow.
+- H.264 video playback with AAC audio, pause and resume, timeline progress,
+  and accelerated right-stick scrubbing with a seek preview.
+- Single-capture and ordered multi-select sharing through the Telegram Bot API.
+  Larger selections are delivered sequentially in batches of up to ten.
+- Local-network QR onboarding, manual bot configuration, and cached Telegram
+  destinations.
+- Whole-selection transfer progress with cancellation.
+- Explicit in-app updates to newer stable releases, with SHA-256 and NRO
+  validation before installation.
+
+## Install
+
+You need a Nintendo Switch that can launch homebrew with full memory access.
+Telegram sharing also requires network access and a Telegram bot.
+
+1. Download `nxgallery.nro` from the
+   [latest release](https://github.com/LPFchan/nxgallery/releases/latest).
+2. Copy it to `/switch/nxgallery/nxgallery.nro` on the SD card.
+3. Launch NX Gallery through the Homebrew Menu with full memory access.
+4. Follow the on-screen setup when prompted to enable Telegram sharing.
+
+## Telegram setup
+
+If no bot token is configured, NX Gallery opens its setup screen on first
+launch. Create a bot with Telegram's `@BotFather`, then scan the displayed QR
+code with a phone on the same local network as the Switch. The phone opens a
+one-time page served by the console where you can submit the token directly to
+NX Gallery.
+
+For manual setup, copy
+[`telegram-bot.conf.example`](telegram-bot.conf.example) to the SD card as
+`/switch/nxgallery/telegram-bot.conf` and replace the placeholder token. Keep
+this file private. NX Gallery can also reuse the token from
+`/switch/nxtorrent/telegram-bot.conf` when NX Torrent is already configured.
+
+NX Gallery discovers destinations from pending updates received by the bot and
+caches them locally. Before refreshing, message the bot directly or add it to
+the intended group and send a message there. For a channel, add the bot as an
+administrator allowed to post media, then publish a channel post. Open the
+Telegram picker and press Y to refresh.
+
+Telegram bots cannot enumerate arbitrary chat history. If a destination is not
+available through pending updates, add a `chat=ID|Title` entry to the
+configuration file so it always appears.
 
 ## Controls
 
-| Surface | Controls |
-| --- | --- |
-| Grid | D-pad moves, A opens, X shares the current capture, + enters multi-select; in multi-select A marks captures and X shares the selection in ordered Telegram batches of up to ten. When a newer release is available, Minus or the bottom-left Minus Update button installs it. |
-| Viewer | D-pad left/right changes capture, A plays/pauses video, left-stick left/right seeks five seconds while playing, X opens Telegram share, B returns; videos show elapsed and total playback progress |
-| Chat picker | Up/down selects, A sends, Y refreshes chats, + opens Bot Setup, B cancels |
-| Sending | B aborts the active Telegram transfer |
-
-The same surfaces are touch-enabled: tap a capture, then use the visible Back,
-Share, chat-row, Send, and Cancel targets.
-
-## Telegram configuration
-
-When neither NX Gallery nor NX Torrent has a bot token on the SD card, NX
-Gallery opens the full-screen Telegram onboarding flow at launch. The console starts a one-shot
-HTTP listener on the local network and shows a QR code (plus the same URL as
-text). Scanning it on a phone that shares the Switch's Wi-Fi opens a paste-the-
-token form served by the console itself; submitting writes
-`/switch/nxgallery/telegram-bot.conf` and starts chat discovery immediately.
-The URL contains a random one-shot path, the listener accepts one valid token
-and closes, and the token never leaves the local network. Networks with client
-isolation (hotels, campus Wi-Fi) block phone-to-console traffic; use the manual
-path below there.
-
-NX Gallery also reads the token from
-`/switch/nxtorrent/telegram-bot.conf`, so an existing NX Torrent setup skips
-onboarding. Each app keeps its own destination and runtime state. Open the
-Telegram share sheet and press + whenever Bot Setup needs to be run again.
-
-Manually: copy `telegram-bot.conf.example` to `/switch/nxgallery/telegram-bot.conf` on the SD card and replace its placeholder token. Optionally add `chat=ID|Title` for destinations that must always appear. With `discover_chats=true`, chats observed in pending bot updates are cached at `/switch/nxgallery/telegram-state.json`. NX Gallery performs one background refresh at launch; opening the picker never waits for Telegram. Y starts another background refresh.
-
-Bots cannot enumerate every chat they belong to. A chat must be configured or observed in an update. Telegram retains pending updates for no longer than 24 hours. NX Gallery and NX Torrent may sequentially consume the same bot update queue; this is an accepted prototype tradeoff.
-
-For a channel destination, add the bot to the channel as an administrator with
-permission to post messages and media. Publish a channel post before refreshing
-the picker so Bot API discovery can observe and cache the channel's canonical ID.
-
-TDLib with a user-account login is required for account-wide chat enumeration/search or historical access. Bot-authorized TDLib, including the proven NX Torrent Horizon port, remains update-only and cannot reconstruct missing bot chat history.
+| Screen | Controller | Touch |
+| --- | --- | --- |
+| Grid | D-pad or left stick navigates; A opens; X shares; Y groups by date; Plus starts or finishes multi-select. In multi-select, A marks captures. | Drag to scroll, tap a capture to open it, or tap the visible View, Share, Group, Select, and Update actions. |
+| Viewer | D-pad or left stick changes capture; A plays or pauses video; hold the right stick left or right to preview an accelerated scrub, then release to seek; X shares; B returns. | Swipe horizontally to browse, tap the video to play or pause, or use the visible actions. |
+| Chat picker | Up/down selects; A sends; Y refreshes destinations; Plus opens Bot Setup; B closes the picker. | Tap a destination, then use Back, Refresh, or Send. |
+| Sending | B requests cancellation. | Tap Cancel. |
 
 ## Updates
 
-NX Gallery checks the latest stable release from `LPFchan/nxgallery` once at
-startup. The check stays invisible when the installed version is current, when
-no release exists, or when GitHub cannot be reached. A newer release adds a
-Minus Update action to the bottom-left of the grid; press Minus or tap that
-button to download and install it. Download progress uses the same panel and
-transition as Telegram transfers. The app verifies GitHub's SHA-256 asset digest
-and the NRO structure before replacing the launched NRO, and keeps the previous
-executable with a `.previous` suffix for rollback. Restart NX Gallery after a
-successful update.
+NX Gallery checks for a newer stable release at startup. When one is available,
+a Minus Update action appears on the grid. Press Minus or tap the action to
+start the download; updates are never installed without that explicit action.
 
-Published releases must use a stable `vMAJOR.MINOR.PATCH` tag, build with the
-matching `APP_VERSION`, and attach the production executable with the exact
-asset name `nxgallery.nro`. Prereleases and differently named assets are not
-offered in-app.
+Before replacing the installed app, NX Gallery verifies the release asset's
+GitHub-provided SHA-256 digest and validates the NRO structure. Restart NX
+Gallery after a successful update.
 
 ## Build
 
-Host policy tests:
+Run the portable host tests with:
 
 ```sh
 make host-test
 ```
 
-Switch build variables mirror the proven NX Torrent toolchain:
+A Switch build requires devkitA64, staged Plutonium, curl, OpenSSL, and an
+FFmpeg 7.1 prefix with H.264 and AAC decoding enabled. The repository includes
+[`scripts/build-switch-ffmpeg.sh`](scripts/build-switch-ffmpeg.sh) to create the
+playback prefix:
 
 ```sh
 export DEVKITPRO=/opt/devkitpro
@@ -91,66 +100,13 @@ export PORTLIBS="$DEVKITPRO/portlibs/switch"
 export PLUTONIUM_PREFIX=/path/to/staged/plutonium
 export SWITCH_CURL_PREFIX=/path/to/staged/switch-curl
 export SWITCH_OPENSSL_PREFIX=/path/to/staged/switch-openssl
-export PLAYBACK_PREFIX=/path/to/staged/switch-ffmpeg-portlibs
 export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
+
+scripts/build-switch-ffmpeg.sh \
+  /path/to/ffmpeg-7.1 /path/to/ffmpeg-build /path/to/ffmpeg-prefix
+export PLAYBACK_PREFIX=/path/to/ffmpeg-prefix
+
 make -j4 APP_VERSION=0.1.5
 ```
 
-`PLAYBACK_PREFIX` must contain a Switch FFmpeg build with H.264 and AAC
-decoders. Build a compatible FFmpeg 7.1 Switch source tree into a fresh prefix
-before building NX Gallery:
-
-```sh
-scripts/build-switch-ffmpeg.sh /path/to/ffmpeg-7.1 /path/to/build /path/to/prefix
-export PLAYBACK_PREFIX=/path/to/prefix
-```
-
-The Makefile rejects playback prefixes that do not register the AAC decoder.
-
-For Ryujinx UI verification, `make automation` produces a separate
-`nxgallery-automation.nro`. It advances grid → viewer → chat picker without
-sending media. This profile is for emulator QA only; release packages use
-`nxgallery.nro`.
-
-The current build host is `yeowoolmac`; hardware probe work runs in
-`main:nxgallery-probe`.
-
-## Automated hardware probe
-
-With NetLoader active on the Switch and a credential file at
-`.secrets/telegram-bot.conf` (or `PROBE_CONFIG=/path/to/file`), run:
-
-```sh
-scripts/run-hardware-probe.sh SWITCH_IP
-```
-
-The default probe is non-sending: it validates album access, real MP4 decode,
-pause/resume, networking, and destination refresh without posting media. A
-one-shot delivery probe must be explicitly requested with
-`NXGALLERY_PROBE_SEND_MEDIA=1`; never wrap that mode in an automatic retry loop.
-
-To launch the production UI with the same memory-only credential transfer:
-
-```sh
-NXGALLERY_RUN_MODE=interactive scripts/run-hardware-probe.sh SWITCH_IP
-```
-
-The production NRO's `--probe` mode attaches stdout and stderr through nxlink,
-queries Horizon's NAND and SD Album Accessor stores, decodes a real MP4 and verifies that pause freezes its frame counter and resume advances it, refreshes destinations, and prints a final
-`NXGALLERY_PROBE_RESULT` line. It does not print the bot token, chat IDs,
-titles, or media filenames. Native exceptions and uncaught C++ termination are
-mirrored to nxlink and persisted to `/switch/nxgallery/crash.log` (falling back
-to `/nxgallery-crash.log` when the app directory is unavailable).
-The harness retains its sanitized last-run transcript at
-`artifacts/hardware-probe-last.log` and reports a distinct failure when hbmenu
-NetLoader never accepts the NRO.
-
-The harness fails unless all required phases report success. For bare nxlink
-launches, it transfers the credential once over ephemeral TLS; the NRO verifies
-the server's public-key fingerprint itself before requesting the credential.
-The token is kept in memory and never appears in nxlink arguments, output, or
-the NRO.
-
-## Install
-
-See [payload/INSTALL.txt](payload/INSTALL.txt). The release archive intentionally contains only the NRO, CA bundle, example configuration, and install guide.
+The build rejects a playback prefix that does not register the AAC decoder.
