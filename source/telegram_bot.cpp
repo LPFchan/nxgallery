@@ -26,6 +26,7 @@ constexpr std::size_t kMaximumChats = 128;
 constexpr std::size_t kMaximumMetadataRefreshes = 16;
 constexpr std::uint64_t kMaximumPhotoBytes = 10U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumVideoBytes = 50U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumThumbnailBytes = 200U * 1024U;
 constexpr std::size_t kMaximumMediaGroupItems = 10;
 
 using JsonOwner = std::unique_ptr<json_object, decltype(&json_object_put)>;
@@ -79,6 +80,23 @@ bool configure_curl(CURL *curl, const TelegramConfig &config, const char *method
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, append_response);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    return true;
+}
+
+bool validated_video_thumbnail(const MediaItem &media, std::string &path) {
+    std::string error;
+    if (media.kind != MediaKind::Video ||
+        !materialize_thumbnail_path(media, path, error)) {
+        path.clear();
+        return false;
+    }
+    struct stat status {};
+    if (stat(path.c_str(), &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_size <= 0 ||
+        static_cast<std::uint64_t>(status.st_size) > kMaximumThumbnailBytes) {
+        path.clear();
+        return false;
+    }
     return true;
 }
 
@@ -343,6 +361,8 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         const std::uint64_t size = status.st_size < 0 ? 0U : static_cast<std::uint64_t>(status.st_size);
         const std::uint64_t limit = media.kind == MediaKind::Photo ? kMaximumPhotoBytes : kMaximumVideoBytes;
         if (size == 0 || size > limit) return {false, media.kind == MediaKind::Photo ? "Photo exceeds the Bot API 10 MB limit" : "Video exceeds the Bot API 50 MB limit"};
+        std::string thumbnail_path;
+        const bool has_thumbnail = validated_video_thumbnail(media, thumbnail_path);
         CURL *curl = curl_easy_init();
         ResponseBody body;
         std::string error;
@@ -365,9 +385,12 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
             part = curl_mime_addpart(mime);
             curl_mime_name(part, "height");
             curl_mime_data(part, "720", CURL_ZERO_TERMINATED);
-            part = curl_mime_addpart(mime);
-            curl_mime_name(part, "supports_streaming");
-            curl_mime_data(part, "true", CURL_ZERO_TERMINATED);
+            if (has_thumbnail) {
+                part = curl_mime_addpart(mime);
+                curl_mime_name(part, "thumbnail");
+                curl_mime_filedata(part, thumbnail_path.c_str());
+                curl_mime_type(part, "image/jpeg");
+            }
         }
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
         if (progress) {
@@ -429,6 +452,7 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
 
         std::vector<std::string> paths;
         paths.reserve(media.size());
+        std::vector<std::string> thumbnail_paths(media.size());
         for (const MediaItem &item : media) {
             std::string path;
             std::string materialize_error;
@@ -449,6 +473,9 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
                     : "A video exceeds the Bot API 50 MB limit"};
             }
             paths.push_back(std::move(path));
+        }
+        for (std::size_t index = 0; index < media.size(); ++index) {
+            (void)validated_video_thumbnail(media[index], thumbnail_paths[index]);
         }
 
         CURL *curl = curl_easy_init();
@@ -491,8 +518,13 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
             if (video) {
                 json_object_object_add(entry, "width", json_object_new_int(1280));
                 json_object_object_add(entry, "height", json_object_new_int(720));
-                json_object_object_add(entry, "supports_streaming",
-                                       json_object_new_boolean(1));
+                if (!thumbnail_paths[index].empty()) {
+                    const std::string thumbnail_attachment =
+                        "attach://thumbnail" + std::to_string(index);
+                    json_object_object_add(
+                        entry, "thumbnail",
+                        json_object_new_string(thumbnail_attachment.c_str()));
+                }
             }
             json_object_array_add(album.get(), entry);
         }
@@ -514,6 +546,14 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
             curl_mime_filedata(part, paths[index].c_str());
             if (media[index].kind == MediaKind::Video) {
                 curl_mime_type(part, "video/mp4");
+            }
+            if (!thumbnail_paths[index].empty()) {
+                part = curl_mime_addpart(mime);
+                const std::string thumbnail_name =
+                    "thumbnail" + std::to_string(index);
+                curl_mime_name(part, thumbnail_name.c_str());
+                curl_mime_filedata(part, thumbnail_paths[index].c_str());
+                curl_mime_type(part, "image/jpeg");
             }
         }
         curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);

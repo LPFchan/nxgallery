@@ -32,6 +32,22 @@ grep -Fq 'kThumbnailFadeFrames' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'kMaximumTelegramBatchItems = 10' "$repo_root/include/nxgallery/telegram_batches.hpp"
 grep -Fq 'send_telegram_batches(' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'sendMediaGroup' "$repo_root/source/telegram_bot.cpp"
+telegram_source="$repo_root/source/telegram_bot.cpp"
+send_media_source=$(sed -n '/BotResult TelegramBot::send_media(/,/^}/p' "$telegram_source")
+send_group_source=$(sed -n '/BotResult TelegramBot::send_media_group(/,/^}/p' "$telegram_source")
+printf '%s\n' "$send_media_source" | grep -Fq \
+    'validated_video_thumbnail(media, thumbnail_path)'
+printf '%s\n' "$send_media_source" | grep -Fq 'curl_mime_name(part, "thumbnail");'
+printf '%s\n' "$send_media_source" | grep -Fq 'thumbnail_path.c_str()'
+printf '%s\n' "$send_media_source" | grep -Fq 'curl_mime_type(part, "image/jpeg");'
+printf '%s\n' "$send_group_source" | grep -Fq '"attach://thumbnail"'
+printf '%s\n' "$send_group_source" | grep -Fq 'entry, "thumbnail",'
+printf '%s\n' "$send_group_source" | grep -Fq '"thumbnail" + std::to_string(index)'
+printf '%s\n' "$send_group_source" | grep -Fq 'thumbnail_paths[index].c_str()'
+printf '%s\n' "$send_group_source" | grep -Fq 'curl_mime_type(part, "image/jpeg");'
+grep -Fq 'materialize_thumbnail_path(media, path, error)' "$telegram_source"
+grep -Fq 'kMaximumThumbnailBytes = 200U * 1024U' "$telegram_source"
+! grep -Fq 'supports_streaming' "$telegram_source"
 grep -Fq 'APP_VERSION ?= 0.1.4' "$repo_root/Makefile"
 grep -Fq 'HidNpadButton_Minus' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'HidNpadButton_StickLLeft, HidNpadButton_StickLRight' "$repo_root/source/gallery_app.cpp"
