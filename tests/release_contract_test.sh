@@ -40,15 +40,20 @@ printf '%s\n' "$send_media_source" | grep -Fq \
 printf '%s\n' "$send_media_source" | grep -Fq 'curl_mime_name(part, "thumbnail");'
 printf '%s\n' "$send_media_source" | grep -Fq 'thumbnail_path.c_str()'
 printf '%s\n' "$send_media_source" | grep -Fq 'curl_mime_type(part, "image/jpeg");'
+printf '%s\n' "$send_media_source" | grep -Fq 'video_duration_seconds(media_path)'
+printf '%s\n' "$send_media_source" | grep -Fq 'curl_mime_name(part, "duration");'
 printf '%s\n' "$send_group_source" | grep -Fq '"attach://thumbnail"'
 printf '%s\n' "$send_group_source" | grep -Fq 'entry, "thumbnail",'
 printf '%s\n' "$send_group_source" | grep -Fq '"thumbnail" + std::to_string(index)'
 printf '%s\n' "$send_group_source" | grep -Fq 'thumbnail_paths[index].c_str()'
 printf '%s\n' "$send_group_source" | grep -Fq 'curl_mime_type(part, "image/jpeg");'
+printf '%s\n' "$send_group_source" | grep -Fq 'video_duration_seconds(path)'
+printf '%s\n' "$send_group_source" | grep -Fq 'entry, "duration",'
 grep -Fq 'materialize_thumbnail_path(media, path, error)' "$telegram_source"
+grep -Fq 'avformat_find_stream_info(format, nullptr)' "$telegram_source"
 grep -Fq 'kMaximumThumbnailBytes = 200U * 1024U' "$telegram_source"
 ! grep -Fq 'supports_streaming' "$telegram_source"
-grep -Fq 'APP_VERSION ?= 0.1.5' "$repo_root/Makefile"
+grep -Fq 'APP_VERSION ?= 0.1.6' "$repo_root/Makefile"
 grep -Fq 'HidNpadButton_Minus' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'HidNpadButton_StickLLeft, HidNpadButton_StickLRight' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'viewer_browse_fire' "$repo_root/source/gallery_app.cpp"

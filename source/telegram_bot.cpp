@@ -2,6 +2,11 @@
 #include <nxgallery/https_trust.hpp>
 #include <nxgallery/horizon_album.hpp>
 
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavutil/mathematics.h>
+}
+
 #include <curl/curl.h>
 #include <json-c/json.h>
 
@@ -98,6 +103,40 @@ bool validated_video_thumbnail(const MediaItem &media, std::string &path) {
         return false;
     }
     return true;
+}
+
+int video_duration_seconds(const std::string &path) {
+    AVFormatContext *format = nullptr;
+    const std::string input_url = path.rfind("sdmc:/", 0) == 0
+        ? "file:" + path : path;
+    if (avformat_open_input(&format, input_url.c_str(), nullptr, nullptr) < 0) {
+        return 0;
+    }
+    if (avformat_find_stream_info(format, nullptr) < 0) {
+        avformat_close_input(&format);
+        return 0;
+    }
+    const int stream_index = av_find_best_stream(
+        format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    std::int64_t duration_ms = 0;
+    if (stream_index >= 0) {
+        AVStream *stream = format->streams[stream_index];
+        if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
+            duration_ms = av_rescale_q(stream->duration, stream->time_base,
+                                       AVRational{1, 1000});
+        }
+    }
+    if (duration_ms <= 0 &&
+        format->duration != AV_NOPTS_VALUE && format->duration > 0) {
+        duration_ms = av_rescale_q(format->duration, AV_TIME_BASE_Q,
+                                   AVRational{1, 1000});
+    }
+    avformat_close_input(&format);
+    if (duration_ms <= 0) return 0;
+    const std::int64_t seconds =
+        duration_ms / 1000 + (duration_ms % 1000 == 0 ? 0 : 1);
+    return static_cast<int>(std::min<std::int64_t>(
+        seconds, std::numeric_limits<int>::max()));
 }
 
 JsonOwner parse_json(const std::string &bytes) {
@@ -361,6 +400,11 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
         const std::uint64_t size = status.st_size < 0 ? 0U : static_cast<std::uint64_t>(status.st_size);
         const std::uint64_t limit = media.kind == MediaKind::Photo ? kMaximumPhotoBytes : kMaximumVideoBytes;
         if (size == 0 || size > limit) return {false, media.kind == MediaKind::Photo ? "Photo exceeds the Bot API 10 MB limit" : "Video exceeds the Bot API 50 MB limit"};
+        const int duration = media.kind == MediaKind::Video
+            ? video_duration_seconds(media_path) : 0;
+        if (media.kind == MediaKind::Video && duration <= 0) {
+            return {false, "Could not read video duration"};
+        }
         std::string thumbnail_path;
         const bool has_thumbnail = validated_video_thumbnail(media, thumbnail_path);
         CURL *curl = curl_easy_init();
@@ -385,6 +429,10 @@ BotResult TelegramBot::send_media(const MediaItem &media, const TelegramChat &ch
             part = curl_mime_addpart(mime);
             curl_mime_name(part, "height");
             curl_mime_data(part, "720", CURL_ZERO_TERMINATED);
+            part = curl_mime_addpart(mime);
+            curl_mime_name(part, "duration");
+            const std::string duration_text = std::to_string(duration);
+            curl_mime_data(part, duration_text.c_str(), CURL_ZERO_TERMINATED);
             if (has_thumbnail) {
                 part = curl_mime_addpart(mime);
                 curl_mime_name(part, "thumbnail");
@@ -452,8 +500,10 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
 
         std::vector<std::string> paths;
         paths.reserve(media.size());
+        std::vector<int> durations(media.size());
         std::vector<std::string> thumbnail_paths(media.size());
-        for (const MediaItem &item : media) {
+        for (std::size_t index = 0; index < media.size(); ++index) {
+            const MediaItem &item = media[index];
             std::string path;
             std::string materialize_error;
             if (!materialize_media_path(item, path, materialize_error)) {
@@ -471,6 +521,12 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
                 return {false, item.kind == MediaKind::Photo
                     ? "A photo exceeds the Bot API 10 MB limit"
                     : "A video exceeds the Bot API 50 MB limit"};
+            }
+            if (item.kind == MediaKind::Video) {
+                durations[index] = video_duration_seconds(path);
+                if (durations[index] <= 0) {
+                    return {false, "Could not read a video duration"};
+                }
             }
             paths.push_back(std::move(path));
         }
@@ -518,6 +574,8 @@ BotResult TelegramBot::send_media_group(const std::vector<MediaItem> &media,
             if (video) {
                 json_object_object_add(entry, "width", json_object_new_int(1280));
                 json_object_object_add(entry, "height", json_object_new_int(720));
+                json_object_object_add(entry, "duration",
+                                       json_object_new_int(durations[index]));
                 if (!thumbnail_paths[index].empty()) {
                     const std::string thumbnail_attachment =
                         "attach://thumbnail" + std::to_string(index);

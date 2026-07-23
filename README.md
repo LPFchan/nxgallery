@@ -106,7 +106,7 @@ scripts/build-switch-ffmpeg.sh \
   /path/to/ffmpeg-7.1 /path/to/ffmpeg-build /path/to/ffmpeg-prefix
 export PLAYBACK_PREFIX=/path/to/ffmpeg-prefix
 
-make -j4 APP_VERSION=0.1.5
+make -j4 APP_VERSION=0.1.6
 ```
 
 The build rejects a playback prefix that does not register the AAC decoder.
