@@ -53,7 +53,7 @@ grep -Fq 'materialize_thumbnail_path(media, path, error)' "$telegram_source"
 grep -Fq 'avformat_find_stream_info(format, nullptr)' "$telegram_source"
 grep -Fq 'kMaximumThumbnailBytes = 200U * 1024U' "$telegram_source"
 ! grep -Fq 'supports_streaming' "$telegram_source"
-grep -Fq 'APP_VERSION ?= 0.1.6' "$repo_root/Makefile"
+grep -Fq 'APP_VERSION ?= 0.1.7' "$repo_root/Makefile"
 grep -Fq 'HidNpadButton_Minus' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'HidNpadButton_StickLLeft, HidNpadButton_StickLRight' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'viewer_browse_fire' "$repo_root/source/gallery_app.cpp"
@@ -61,6 +61,9 @@ grep -Fq 'void seek_relative(std::int64_t delta_ms);' "$repo_root/include/nxgall
 grep -Fq 'av_seek_frame(' "$repo_root/source/video_player.cpp"
 grep -Fq 'avcodec_flush_buffers(codec);' "$repo_root/source/video_player.cpp"
 grep -Fq 'SDL_ClearQueuedAudio(device);' "$repo_root/source/video_player.cpp"
+grep -Fq 'kConstrainedDecodedVideoFrames = 1' "$repo_root/source/video_player.cpp"
+grep -Fq 'maximum_decoded_video_frames' "$repo_root/source/video_player.cpp"
+grep -Fq 'texture_ready' "$repo_root/source/video_player.cpp"
 [ -x "$repo_root/scripts/build-switch-ffmpeg.sh" ]
 sh -n "$repo_root/scripts/build-switch-ffmpeg.sh"
 grep -Fq 'PLAYBACK_PREFIX must provide an FFmpeg libavcodec with the AAC decoder enabled' \

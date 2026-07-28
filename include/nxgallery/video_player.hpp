@@ -12,7 +12,7 @@ namespace nxgallery {
 
 class VideoPlayer {
 public:
-    explicit VideoPlayer(SDL_Renderer *renderer);
+    explicit VideoPlayer(SDL_Renderer *renderer, bool constrained_memory = false);
     ~VideoPlayer();
 
     VideoPlayer(const VideoPlayer &) = delete;

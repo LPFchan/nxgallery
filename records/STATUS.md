@@ -2,9 +2,9 @@
 
 ## Snapshot
 
-- Last updated: 2026-07-21
+- Last updated: 2026-07-28
 - Overall posture: `active`
-- Current focus: physical Switch validation of audio playback, left-stick seeking, large-selection batching, progressive startup, bot onboarding, cached chat UX, and transfer progress
+- Current focus: release 0.1.7 and physical Switch validation of audio playback, large-selection batching, progressive startup, bot onboarding, cached chat UX, and transfer progress
 - Highest-priority blocker: none for SD enumeration, networking, or Telegram photo/video delivery
 - Next operator decision needed: whether user-account TDLib login is acceptable for exhaustive Telegram chat enumeration
 - Related decisions: DEC-20260717-001
@@ -63,7 +63,15 @@ The emulator AudioRenderer ran against an AAC-enabled Switch FFmpeg build, and
 an OpenAL wave capture contained the fixture's expected non-silent 1 kHz signal.
 The build rejects playback prefixes that omit the AAC decoder. Video playback
 accepts five-second left-stick seeks while D-pad left/right remains capture
-navigation. These audio and seeking changes await physical-device validation.
+navigation. Audio output and pause/resume still await physical-device validation.
+
+Physical applet-mode testing on firmware 22.5.0 reproduced an allocation crash
+after repeated video navigation and seeking. Constrained applet playback now
+keeps one decoded video frame queued, reuses decoded RGBA and audio buffers plus
+the SDL texture allocation across clips, and contains allocation or worker
+exceptions inside the player. Retained texture contents remain hidden until the
+next clip uploads its first frame. The operator confirmed that the crash and the
+stale-frame navigation regression no longer reproduce on hardware.
 
 ## Active tracks
 
@@ -76,6 +84,6 @@ navigation. These audio and seeking changes await physical-device validation.
 
 ### Product completeness
 
-- Status: `playback, seeking, and batched transfer UX implemented; hardware validation pending`
-- Goal: validate progressive thumbnail loading, bot onboarding, playback audio/pause/resume/seeking, large-selection transfer progress, cached chat opening, and the update action on hardware.
+- Status: `applet playback navigation and seeking validated; remaining interactive hardware validation pending`
+- Goal: validate progressive thumbnail loading, bot onboarding, playback audio/pause/resume, large-selection transfer progress, cached chat opening, and the update action on hardware.
 - Dependency: successful physical-device share validation.

@@ -1482,7 +1482,8 @@ GalleryApplication::~GalleryApplication() {
 }
 
 void GalleryApplication::OnLoad() {
-    video_player_ = std::make_unique<VideoPlayer>(pu::ui::render::GetMainRenderer());
+    video_player_ = std::make_unique<VideoPlayer>(
+        pu::ui::render::GetMainRenderer(), constrained_applet_);
     layout_ = pu::ui::Layout::New();
     layout_->SetBackgroundColor(kBackground);
     element_ = std::make_shared<GalleryElement>(controller_, status_, *video_player_,

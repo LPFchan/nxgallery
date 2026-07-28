@@ -19,8 +19,10 @@ extern "C" {
 #include <cstdio>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <string>
 #include <thread>
@@ -36,6 +38,7 @@ constexpr std::uint64_t kAudioQueueLowWatermarkMs = 200;
 constexpr std::uint64_t kAudioQueueHighWatermarkMs = 400;
 constexpr std::size_t kAudioPrimeMaximumScannedPackets = 2048;
 constexpr std::size_t kMaximumDecodedVideoFrames = 3;
+constexpr std::size_t kConstrainedDecodedVideoFrames = 1;
 constexpr std::size_t kMaximumQueuedVideoPackets = 120;
 constexpr std::size_t kMaximumQueuedVideoBytes = 4U * 1024U * 1024U;
 constexpr std::size_t kVideoPacketTarget = 12;
@@ -45,12 +48,16 @@ constexpr std::size_t kMaximumQueuedAudioBytes = 1U * 1024U * 1024U;
 }  // namespace
 
 struct VideoPlayer::Impl {
-    explicit Impl(SDL_Renderer *value) : renderer(value) {}
+    Impl(SDL_Renderer *value, bool constrained_memory)
+        : renderer(value), maximum_decoded_video_frames(
+              constrained_memory ? kConstrainedDecodedVideoFrames :
+                                   kMaximumDecodedVideoFrames) {}
 
     SDL_Renderer *renderer{};
     SDL_Texture *texture{};
     int texture_width{};
     int texture_height{};
+    std::atomic<bool> texture_ready{false};
     std::thread worker;
     std::atomic<bool> stop_requested{};
     std::atomic<bool> is_active{};
@@ -64,14 +71,28 @@ struct VideoPlayer::Impl {
     mutable std::mutex mutex;
     std::condition_variable wake;
     std::vector<std::uint8_t> pending_pixels;
+    std::vector<std::uint8_t> spare_pixels;
+    std::vector<std::uint8_t> audio_samples;
     int pending_width{};
     int pending_height{};
     bool pending_frame{};
     std::string message;
+    const std::size_t maximum_decoded_video_frames;
 
     void set_message(std::string value) {
         std::lock_guard<std::mutex> lock(mutex);
         message = std::move(value);
+    }
+
+    void fail_playback(const char *value, const char *reason) noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(mutex);
+            message.assign(value);
+        } catch (...) {
+        }
+        is_active = false;
+        std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=failed reason=%s\n",
+                    reason);
     }
 
     // Drains every decoded audio frame in the codec into the SDL queue as
@@ -89,9 +110,8 @@ struct VideoPlayer::Impl {
             const int capacity = swr_get_out_samples(resampler,
                                                      audio_frame->nb_samples);
             if (capacity <= 0) continue;
-            std::vector<std::uint8_t> samples(
-                static_cast<std::size_t>(capacity) * 4U);
-            std::uint8_t *outputs[] = {samples.data()};
+            audio_samples.resize(static_cast<std::size_t>(capacity) * 4U);
+            std::uint8_t *outputs[] = {audio_samples.data()};
             const int converted = swr_convert(
                 resampler, outputs, capacity,
                 audio_frame->extended_data, audio_frame->nb_samples);
@@ -121,7 +141,8 @@ struct VideoPlayer::Impl {
                     static_cast<std::int64_t>(skip_samples) * 1000 /
                         audio_codec->sample_rate;
                 const Uint32 bytes = static_cast<Uint32>(playable_samples) * 4U;
-                if (SDL_QueueAudio(device, samples.data() + skip_samples * 4U,
+                if (SDL_QueueAudio(device,
+                                   audio_samples.data() + skip_samples * 4U,
                                    bytes) == 0) {
                     if (!first_audio_pts_ms) first_audio_pts_ms = queued_pts_ms;
                     queued_bytes += bytes;
@@ -198,8 +219,9 @@ struct VideoPlayer::Impl {
             is_active = false;
         };
 
-        const std::string input_url = path.rfind("sdmc:/", 0) == 0
-            ? "file:" + path : path;
+        try {
+            const std::string input_url = path.rfind("sdmc:/", 0) == 0
+                ? "file:" + path : path;
         const int open_result = avformat_open_input(
             &format, input_url.c_str(), nullptr, nullptr);
         const int info_result = open_result < 0
@@ -347,6 +369,25 @@ struct VideoPlayer::Impl {
             int height{};
         };
         std::deque<DecodedVideoFrame> video_frames;
+        std::vector<std::uint8_t> reusable_pixels;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            reusable_pixels = std::move(spare_pixels);
+            if (reusable_pixels.capacity() < pending_pixels.capacity()) {
+                reusable_pixels = std::move(pending_pixels);
+            }
+        }
+        auto recycle_pixels = [&](std::vector<std::uint8_t> pixels) {
+            if (pixels.capacity() > reusable_pixels.capacity()) {
+                reusable_pixels = std::move(pixels);
+            }
+        };
+        auto clear_video_frames = [&] {
+            while (!video_frames.empty()) {
+                recycle_pixels(std::move(video_frames.front().pixels));
+                video_frames.pop_front();
+            }
+        };
         auto playback_origin = std::chrono::steady_clock::now();
         std::uint64_t discard_video_before_ms = 0;
         bool discarding_seek_preroll = false;
@@ -473,12 +514,13 @@ struct VideoPlayer::Impl {
                     frame_position_ms = std::min(frame_position_ms,
                                                  playback_duration_ms.load());
                 }
-                if (video_frames.size() >= kMaximumDecodedVideoFrames) {
+                if (video_frames.size() >= maximum_decoded_video_frames) {
                     ++dropped_video_frames;
                     continue;
                 }
                 const std::size_t stride = static_cast<std::size_t>(codec->width) * 4U;
                 DecodedVideoFrame decoded;
+                decoded.pixels = std::move(reusable_pixels);
                 decoded.pixels.resize(stride * static_cast<std::size_t>(codec->height));
                 decoded.pts_ms = frame_position_ms;
                 decoded.width = codec->width;
@@ -502,6 +544,7 @@ struct VideoPlayer::Impl {
                     video_frames.pop_front();
                     break;
                 }
+                recycle_pixels(std::move(video_frames.front().pixels));
                 video_frames.pop_front();
                 ++dropped_video_frames;
             }
@@ -509,6 +552,7 @@ struct VideoPlayer::Impl {
             const std::uint64_t frame_pts_ms = selected->pts_ms;
             {
                 std::lock_guard<std::mutex> lock(mutex);
+                recycle_pixels(std::move(pending_pixels));
                 pending_pixels = std::move(selected->pixels);
                 pending_width = selected->width;
                 pending_height = selected->height;
@@ -537,7 +581,7 @@ struct VideoPlayer::Impl {
         auto prime_audio = [&](std::uint64_t target_ms) {
             clear_video_packets();
             clear_audio_packets();
-            video_frames.clear();
+            clear_video_frames();
             first_video_pts_ms.reset();
             first_audio_pts_ms.reset();
             fallback_audio_pts_ms = static_cast<std::int64_t>(target_ms);
@@ -585,7 +629,7 @@ struct VideoPlayer::Impl {
             if (stop_requested || pending_seek_delta_ms.load() != 0) {
                 clear_video_packets();
                 clear_audio_packets();
-                video_frames.clear();
+                clear_video_frames();
                 return false;
             }
 
@@ -627,7 +671,7 @@ struct VideoPlayer::Impl {
                     static_cast<unsigned int>(1000.0 / seconds_per_frame),
                     static_cast<unsigned long long>(kAudioQueueLowWatermarkMs),
                     static_cast<unsigned long long>(kAudioQueueHighWatermarkMs),
-                    kMaximumDecodedVideoFrames,
+                    maximum_decoded_video_frames,
                     kVideoPacketTarget,
                     kMaximumQueuedVideoPackets,
                     kMaximumQueuedVideoBytes,
@@ -678,7 +722,7 @@ struct VideoPlayer::Impl {
                     }
                     clear_video_packets();
                     clear_audio_packets();
-                    video_frames.clear();
+                    clear_video_frames();
                     {
                         std::lock_guard<std::mutex> lock(mutex);
                         pending_pixels.clear();
@@ -782,7 +826,7 @@ struct VideoPlayer::Impl {
                 continue;
             }
             if (!video_packets.empty() &&
-                video_frames.size() < kMaximumDecodedVideoFrames &&
+                video_frames.size() < maximum_decoded_video_frames &&
                 (!audio_started || !refilling_audio || input_eof)) {
                 AVPacket *saved = video_packets.front();
                 video_packets.pop_front();
@@ -858,16 +902,35 @@ struct VideoPlayer::Impl {
                         static_cast<unsigned long long>(audio_clock_ms()),
                         static_cast<unsigned long long>(queued_audio_ms()));
         }
+        clear_video_frames();
         finish();
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (reusable_pixels.capacity() > spare_pixels.capacity()) {
+                spare_pixels = std::move(reusable_pixels);
+            }
+        }
+        } catch (const std::bad_alloc &) {
+            finish();
+            fail_playback("Playback stopped: applet memory is full", "out_of_memory");
+        } catch (const std::exception &error) {
+            finish();
+            fail_playback("Playback stopped unexpectedly", error.what());
+        } catch (...) {
+            finish();
+            fail_playback("Playback stopped unexpectedly", "unknown_exception");
+        }
     }
 };
 
-VideoPlayer::VideoPlayer(SDL_Renderer *renderer) : impl_(std::make_unique<Impl>(renderer)) {
+VideoPlayer::VideoPlayer(SDL_Renderer *renderer, bool constrained_memory)
+    : impl_(std::make_unique<Impl>(renderer, constrained_memory)) {
     av_log_set_level(AV_LOG_ERROR);
 }
 
 VideoPlayer::~VideoPlayer() {
     stop();
+    if (impl_->texture != nullptr) SDL_DestroyTexture(impl_->texture);
 }
 
 void VideoPlayer::play(const MediaItem &media) {
@@ -877,7 +940,23 @@ void VideoPlayer::play(const MediaItem &media) {
     impl_->is_active = true;
     impl_->set_message("Loading video...");
     std::printf("NXGALLERY_DIAGNOSTIC event=video_playback state=loading\n");
-    impl_->worker = std::thread([this, media] { impl_->decode(media); });
+    try {
+        impl_->worker = std::thread([this, media] {
+            try {
+                impl_->decode(media);
+            } catch (const std::bad_alloc &) {
+                impl_->fail_playback("Playback stopped: applet memory is full",
+                                     "out_of_memory");
+            } catch (const std::exception &error) {
+                impl_->fail_playback("Playback stopped unexpectedly", error.what());
+            } catch (...) {
+                impl_->fail_playback("Playback stopped unexpectedly",
+                                     "unknown_exception");
+            }
+        });
+    } catch (const std::exception &error) {
+        impl_->fail_playback("Could not start video playback", error.what());
+    }
 }
 
 void VideoPlayer::toggle_pause() {
@@ -927,10 +1006,7 @@ void VideoPlayer::stop() {
     impl_->pending_width = 0;
     impl_->pending_height = 0;
     impl_->pending_frame = false;
-    if (impl_->texture != nullptr) SDL_DestroyTexture(impl_->texture);
-    impl_->texture = nullptr;
-    impl_->texture_width = 0;
-    impl_->texture_height = 0;
+    impl_->texture_ready = false;
 }
 
 void VideoPlayer::update_texture() {
@@ -946,13 +1022,18 @@ void VideoPlayer::update_texture() {
         impl_->texture_height = impl_->pending_height;
     }
     if (impl_->texture != nullptr) {
-        SDL_UpdateTexture(impl_->texture, nullptr, impl_->pending_pixels.data(),
-                          impl_->pending_width * 4);
+        impl_->texture_ready = SDL_UpdateTexture(
+            impl_->texture, nullptr, impl_->pending_pixels.data(),
+            impl_->pending_width * 4) == 0;
+    } else {
+        impl_->texture_ready = false;
     }
     impl_->pending_frame = false;
 }
 
-SDL_Texture *VideoPlayer::texture() const noexcept { return impl_->texture; }
+SDL_Texture *VideoPlayer::texture() const noexcept {
+    return impl_->texture_ready ? impl_->texture : nullptr;
+}
 bool VideoPlayer::active() const noexcept { return impl_->is_active; }
 bool VideoPlayer::paused() const noexcept { return impl_->is_paused; }
 std::uint64_t VideoPlayer::frames_decoded() const noexcept {
