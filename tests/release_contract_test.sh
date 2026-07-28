@@ -32,6 +32,10 @@ grep -Fq 'kThumbnailFadeFrames' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'kMaximumTelegramBatchItems = 10' "$repo_root/include/nxgallery/telegram_batches.hpp"
 grep -Fq 'send_telegram_batches(' "$repo_root/source/gallery_app.cpp"
 grep -Fq 'sendMediaGroup' "$repo_root/source/telegram_bot.cpp"
+grep -Fq 'merge_videos(' "$repo_root/source/gallery_app.cpp"
+grep -Fq 'kMaximumMergedVideoBytes' "$repo_root/include/nxgallery/video_merge.hpp"
+grep -Fq 'ToggleVideoMerge' "$repo_root/source/gallery_app.cpp"
+grep -Fq -- '--enable-muxer=mov' "$repo_root/scripts/build-switch-ffmpeg.sh"
 telegram_source="$repo_root/source/telegram_bot.cpp"
 send_media_source=$(sed -n '/BotResult TelegramBot::send_media(/,/^}/p' "$telegram_source")
 send_group_source=$(sed -n '/BotResult TelegramBot::send_media_group(/,/^}/p' "$telegram_source")

@@ -12,7 +12,7 @@
 
 ### Near term
 
-- Run one non-sending nxlink probe to gate MP4 audio and pause/resume on hardware, then exercise progressive startup, QR onboarding, large multi-select, the cached picker, and whole-selection transfer progress with captured diagnostics. Validate one selection larger than ten as an explicit one-shot Telegram delivery operation; media-delivery probes must not retry automatically.
+- Run one non-sending nxlink probe to gate MP4 audio and pause/resume on hardware, then exercise progressive startup, QR onboarding, lossless merging of two compatible videos, large multi-select, the cached picker, and whole-selection transfer progress with captured diagnostics. Validate the merged MP4's duration, audio continuity, order, cleanup, and Telegram playback. Validate one selection larger than ten as an explicit one-shot Telegram delivery operation; media-delivery probes must not retry automatically.
 
 ### Deferred
 

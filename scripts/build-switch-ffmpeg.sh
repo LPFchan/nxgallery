@@ -33,7 +33,7 @@ PATH="$DEVKITA64/bin:$PATH" "$NXG_FFMPEG_SOURCE/configure" \
     --enable-cross-compile \
     --arch=aarch64 \
     --cpu=cortex-a57 \
-    --target-os=horizon \
+    --target-os=none \
     --enable-pic \
     --extra-cflags="-D__SWITCH__ -D_GNU_SOURCE -O2 -march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec -I$DEVKITPRO/libnx/include -I$DEVKITPRO/portlibs/switch/include" \
     --extra-cxxflags="-D__SWITCH__ -D_GNU_SOURCE -O2 -march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec -I$DEVKITPRO/libnx/include -I$DEVKITPRO/portlibs/switch/include" \
@@ -44,6 +44,10 @@ PATH="$DEVKITA64/bin:$PATH" "$NXG_FFMPEG_SOURCE/configure" \
     --disable-doc \
     --disable-autodetect \
     --disable-everything \
+    --disable-network \
+    --disable-avdevice \
+    --disable-avfilter \
+    --disable-postproc \
     --enable-avformat \
     --enable-avcodec \
     --enable-avutil \
@@ -51,12 +55,12 @@ PATH="$DEVKITA64/bin:$PATH" "$NXG_FFMPEG_SOURCE/configure" \
     --enable-swresample \
     --enable-protocol=file \
     --enable-demuxer=mov \
+    --enable-muxer=mov \
     --enable-decoder=h264 \
     --enable-parser=h264 \
     --enable-decoder=aac \
     --enable-parser=aac \
-    --enable-pthreads \
-    --enable-libnx
+    --enable-pthreads
 
 make -j"${JOBS:-4}"
 make install
@@ -64,5 +68,11 @@ make install
 if ! "$DEVKITA64/bin/aarch64-none-elf-nm" -g \
         "$NXG_FFMPEG_PREFIX/lib/libavcodec.a" | grep -q 'ff_aac_decoder'; then
     echo "built libavcodec archive does not register the AAC decoder" >&2
+    exit 1
+fi
+
+if ! "$DEVKITA64/bin/aarch64-none-elf-nm" -g \
+        "$NXG_FFMPEG_PREFIX/lib/libavformat.a" | grep -q 'ff_mov_muxer'; then
+    echo "built libavformat archive does not register the MOV/MP4 muxer" >&2
     exit 1
 fi

@@ -1,5 +1,6 @@
 #include <nxgallery/gallery_app.hpp>
 #include <nxgallery/telegram_batches.hpp>
+#include <nxgallery/video_merge.hpp>
 #include <nxgallery/horizon_album.hpp>
 #include <nxgallery/release_update.hpp>
 #include <nxgallery/video_player.hpp>
@@ -138,6 +139,8 @@ double ease_out_cubic(double t) {
 // Token setup overlay: reuses the chat-picker dialog footprint, QR panel on
 // the left, instructions on the right.
 constexpr char kTelegramConfigPath[] = "sdmc:/switch/nxgallery/telegram-bot.conf";
+constexpr char kMergedVideoPath[] =
+    "sdmc:/switch/nxgallery/merged-video.mp4";
 constexpr char kRawAlbumPath[] = "sdmc:/Nintendo/Album";
 constexpr std::uint16_t kSetupPort = 8135;
 constexpr std::int32_t kSetupQrX = 240;
@@ -409,6 +412,7 @@ public:
                    std::atomic<std::uint64_t> &transfer_current,
                    std::atomic<std::uint64_t> &transfer_total,
                    std::atomic<bool> &transfer_cancel_requested,
+                   std::atomic<bool> &video_merge_preparing,
                    bool &setup_active, std::string &setup_url,
                    std::string &setup_notice, bool &setup_fullscreen,
                    bool &album_loading, bool &update_notice_active,
@@ -425,6 +429,7 @@ public:
         : controller_(controller), status_(status), video_player_(video_player),
           transfer_current_(transfer_current), transfer_total_(transfer_total),
           transfer_cancel_requested_(transfer_cancel_requested),
+          video_merge_preparing_(video_merge_preparing),
           setup_active_(setup_active), setup_url_(setup_url),
           setup_notice_(setup_notice), setup_fullscreen_(setup_fullscreen),
           album_loading_(album_loading),
@@ -1310,20 +1315,29 @@ private:
             text(drawer, clipped(chats[index].title, 44), 23, kInk,
                  kPickerRowX + 16, row_y + 11);
         }
-        const std::int32_t third = kPickerWidth / 3;
+        const std::int32_t quarter = kPickerWidth / 4;
         drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
-                                    kPickerX + third,
+                                    kPickerX + quarter,
                                     kPickerButtonY + rise, 1, kPickerButtonHeight);
         drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
-                                    kPickerX + 2 * third,
+                                    kPickerX + 2 * quarter,
+                                    kPickerButtonY + rise, 1, kPickerButtonHeight);
+        drawer->RenderRectangleFill(with_opacity(kDialogRule, opacity),
+                                    kPickerX + 3 * quarter,
                                     kPickerButtonY + rise, 1, kPickerButtonHeight);
         const std::int32_t label_y = kPickerButtonY + 20 + rise;
         text_center(drawer, " Cancel", 24, kDialogAction,
-                    kPickerX + third / 2, label_y);
+                    kPickerX + quarter / 2, label_y);
+        const bool merge_available = controller_.video_merge_available();
+        const std::string merge_label = controller_.video_merge_enabled()
+            ? " Merge On" : " Merge";
+        text_center(drawer, merge_label, 24,
+                    merge_available ? kDialogAction : kMuted,
+                    kPickerX + quarter + quarter / 2, label_y);
         text_center(drawer, " Refresh", 24, kDialogAction,
-                    kPickerX + third + third / 2, label_y);
+                    kPickerX + 2 * quarter + quarter / 2, label_y);
         text_center(drawer, " Send", 24, kDialogAction,
-                    kPickerX + 2 * third + third / 2, label_y);
+                    kPickerX + 3 * quarter + quarter / 2, label_y);
         render_alpha_ = previous_render_alpha;
     }
 
@@ -1357,9 +1371,12 @@ private:
 
     void render_sending(pu::ui::render::Renderer::Ref &drawer) {
         const bool cancelling = transfer_cancel_requested_.load();
+        const bool merging = video_merge_preparing_.load();
         render_progress_panel(
-            drawer, cancelling ? "Cancelling transfer..." : "Sending to Telegram...",
-            "Preparing upload...",
+            drawer, cancelling ? "Cancelling transfer..." :
+                (merging ? "Merging selected videos..." :
+                           "Sending to Telegram..."),
+            merging ? "Preparing merged video..." : "Preparing upload...",
             cancelling ? "Waiting for Telegram to stop" : " Cancel",
             transfer_current_.load(), transfer_total_.load(), dialog_rise());
     }
@@ -1401,6 +1418,7 @@ private:
     std::atomic<std::uint64_t> &transfer_current_;
     std::atomic<std::uint64_t> &transfer_total_;
     std::atomic<bool> &transfer_cancel_requested_;
+    std::atomic<bool> &video_merge_preparing_;
     bool &setup_active_;
     std::string &setup_url_;
     std::string &setup_notice_;
@@ -1489,6 +1507,7 @@ void GalleryApplication::OnLoad() {
     element_ = std::make_shared<GalleryElement>(controller_, status_, *video_player_,
                                                 transfer_current_, transfer_total_,
                                                 transfer_cancel_requested_,
+                                                video_merge_preparing_,
                                                 setup_active_, setup_url_,
                                                 setup_notice_, setup_fullscreen_,
                                                 album_loading_,
@@ -1723,8 +1742,9 @@ void GalleryApplication::start_share(ShareRequest request) {
     transfer_current_ = 0;
     std::uint64_t expected_total = 0;
     for (const MediaItem &item : request.media) expected_total += item.size;
-    transfer_total_ = expected_total;
+    transfer_total_ = request.merge_videos ? expected_total * 2 : expected_total;
     transfer_cancel_requested_ = false;
+    video_merge_preparing_ = request.merge_videos;
     share_worker_ = std::thread([this, request = std::move(request)]() mutable {
         auto progress =
             [this](std::uint64_t current, std::uint64_t total) {
@@ -1732,18 +1752,50 @@ void GalleryApplication::start_share(ShareRequest request) {
                 if (total > 0) transfer_total_ = total;
                 return !transfer_cancel_requested_.load();
             };
-        BotResult result = send_telegram_batches(
-            request.media, progress,
-            [this, &request](const MediaItem &media,
-                             TelegramBot::TransferProgress batch_progress) {
-                return bot_->send_media(media, request.chat,
-                                        std::move(batch_progress));
-            },
-            [this, &request](const std::vector<MediaItem> &media,
-                             TelegramBot::TransferProgress batch_progress) {
-                return bot_->send_media_group(media, request.chat,
-                                              std::move(batch_progress));
-            });
+        BotResult result;
+        if (request.merge_videos) {
+            (void)mkdir("sdmc:/switch", 0777);
+            (void)mkdir("sdmc:/switch/nxgallery", 0777);
+            std::uint64_t merge_total = 0;
+            VideoMergeResult merged = merge_videos(
+                request.media, kMergedVideoPath,
+                [this, &merge_total](std::uint64_t current,
+                                     std::uint64_t total) {
+                    merge_total = total;
+                    transfer_current_ = current;
+                    transfer_total_ = total * 2;
+                    return !transfer_cancel_requested_.load();
+                });
+            video_merge_preparing_ = false;
+            if (!merged.success) {
+                result = {false, std::move(merged.message)};
+            } else {
+                auto upload_progress =
+                    [this, merge_total](std::uint64_t current,
+                                        std::uint64_t total) {
+                        transfer_current_ = merge_total + current;
+                        transfer_total_ = merge_total + total;
+                        return !transfer_cancel_requested_.load();
+                    };
+                result = bot_->send_media(merged.media, request.chat,
+                                          std::move(upload_progress));
+                (void)std::remove(kMergedVideoPath);
+            }
+        } else {
+            video_merge_preparing_ = false;
+            result = send_telegram_batches(
+                request.media, progress,
+                [this, &request](const MediaItem &media,
+                                 TelegramBot::TransferProgress batch_progress) {
+                    return bot_->send_media(media, request.chat,
+                                            std::move(batch_progress));
+                },
+                [this, &request](const std::vector<MediaItem> &media,
+                                 TelegramBot::TransferProgress batch_progress) {
+                    return bot_->send_media_group(media, request.chat,
+                                                  std::move(batch_progress));
+                });
+        }
         std::lock_guard<std::mutex> lock(share_mutex_);
         share_result_ = std::move(result);
     });
@@ -2050,16 +2102,24 @@ void GalleryApplication::on_touch(pu::ui::TouchPoint touch) {
         return;
     }
     if (controller_.screen() == Screen::ChatPicker) {
-        const std::int32_t third = kPickerWidth / 3;
-        if (touch.HitsRegion(kPickerX, kPickerButtonY, third, kPickerButtonHeight)) {
+        const std::int32_t quarter = kPickerWidth / 4;
+        if (touch.HitsRegion(kPickerX, kPickerButtonY, quarter,
+                             kPickerButtonHeight)) {
             controller_.handle(Action::Back);
             return;
         }
-        if (touch.HitsRegion(kPickerX + third, kPickerButtonY, third, kPickerButtonHeight)) {
+        if (touch.HitsRegion(kPickerX + quarter, kPickerButtonY, quarter,
+                             kPickerButtonHeight)) {
+            controller_.handle(Action::ToggleVideoMerge);
+            return;
+        }
+        if (touch.HitsRegion(kPickerX + 2 * quarter, kPickerButtonY, quarter,
+                             kPickerButtonHeight)) {
             refresh_chats_from_ui();
             return;
         }
-        if (touch.HitsRegion(kPickerX + 2 * third, kPickerButtonY, third, kPickerButtonHeight)) {
+        if (touch.HitsRegion(kPickerX + 3 * quarter, kPickerButtonY, quarter,
+                             kPickerButtonHeight)) {
             auto request = controller_.handle(Action::Confirm);
             if (request) start_share(std::move(*request));
             return;
@@ -2420,6 +2480,11 @@ void GalleryApplication::on_input(std::uint64_t down, std::uint64_t held,
         (controller_.screen() == Screen::Grid ||
          controller_.screen() == Screen::Viewer)) {
         open_chat_picker();
+        return;
+    }
+    if ((down & HidNpadButton_X) != 0 &&
+        controller_.screen() == Screen::ChatPicker) {
+        controller_.handle(Action::ToggleVideoMerge);
         return;
     }
     if ((down & HidNpadButton_Y) != 0 && controller_.screen() == Screen::Grid) {

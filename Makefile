@@ -27,6 +27,11 @@ PLAYBACK_AAC_DECODER := $(shell $(DEVKITPRO)/devkitA64/bin/aarch64-none-elf-nm -
 ifeq ($(PLAYBACK_AAC_DECODER),0)
 $(error PLAYBACK_PREFIX must provide an FFmpeg libavcodec with the AAC decoder enabled. Run scripts/build-switch-ffmpeg.sh)
 endif
+PLAYBACK_MP4_MUXER := $(shell $(DEVKITPRO)/devkitA64/bin/aarch64-none-elf-nm -g \
+	$(PLAYBACK_PREFIX)/lib/libavformat.a 2>/dev/null | grep -c 'ff_mov_muxer')
+ifeq ($(PLAYBACK_MP4_MUXER),0)
+$(error PLAYBACK_PREFIX must provide an FFmpeg libavformat with the MOV/MP4 muxer enabled. Run scripts/build-switch-ffmpeg.sh)
+endif
 endif
 APP_TITLE   := NX Gallery
 APP_AUTHOR  := LPFchan

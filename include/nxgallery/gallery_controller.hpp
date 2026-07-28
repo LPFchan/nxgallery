@@ -11,12 +11,14 @@ namespace nxgallery {
 
 enum class Screen { Grid, Viewer, ChatPicker, Sending, Result };
 enum class Action {
-    Left, Right, Up, Down, Confirm, Back, Share, Refresh, ToggleMultiSelect
+    Left, Right, Up, Down, Confirm, Back, Share, Refresh, ToggleMultiSelect,
+    ToggleVideoMerge
 };
 
 struct ShareRequest {
     std::vector<MediaItem> media;
     TelegramChat chat;
+    bool merge_videos{};
 };
 
 class GalleryController {
@@ -38,6 +40,8 @@ public:
     std::size_t selected_chat_index() const noexcept { return chat_index_; }
     std::size_t grid_page_start() const noexcept;
     bool multi_select_active() const noexcept { return multi_select_active_; }
+    bool video_merge_available() const;
+    bool video_merge_enabled() const noexcept { return video_merge_enabled_; }
     Screen share_origin() const noexcept { return share_origin_; }
     bool is_media_selected(std::size_t index) const noexcept;
     std::size_t selected_media_count() const noexcept {
@@ -62,6 +66,7 @@ private:
     std::string result_message_;
     bool share_succeeded_{};
     bool multi_select_active_{};
+    bool video_merge_enabled_{};
 };
 
 }  // namespace nxgallery

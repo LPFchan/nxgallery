@@ -95,6 +95,7 @@ private:
     std::atomic<std::uint64_t> transfer_current_{};
     std::atomic<std::uint64_t> transfer_total_{};
     std::atomic<bool> transfer_cancel_requested_{};
+    std::atomic<bool> video_merge_preparing_{};
     std::atomic<bool> update_cancel_requested_{};
     std::atomic<std::uint64_t> update_current_{};
     std::atomic<std::uint64_t> update_total_{};

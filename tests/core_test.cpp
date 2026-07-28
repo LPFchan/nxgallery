@@ -4,6 +4,7 @@
 #include <nxgallery/telegram_batches.hpp>
 #include <nxgallery/telegram_config.hpp>
 #include <nxgallery/token_setup.hpp>
+#include <nxgallery/video_merge.hpp>
 
 #include <cassert>
 #include <cstdio>
@@ -109,6 +110,46 @@ void grid_multi_select_flow() {
     assert(controller.screen() == nxgallery::Screen::Grid);
     assert(!controller.multi_select_active());
     assert(controller.selected_media_count() == 0);
+}
+
+void video_merge_selection_flow() {
+    nxgallery::GalleryController controller;
+    controller.set_media({
+        {"new.mp4", "new.mp4", nxgallery::MediaKind::Video, 3,
+         8U * 1024U * 1024U},
+        {"middle.mp4", "middle.mp4", nxgallery::MediaKind::Video, 2,
+         9U * 1024U * 1024U},
+        {"old.mp4", "old.mp4", nxgallery::MediaKind::Video, 1,
+         10U * 1024U * 1024U},
+    });
+    controller.set_chats({{42, "Saved", "private"}});
+    controller.handle(nxgallery::Action::ToggleMultiSelect);
+    for (std::size_t index = 0; index < 3; ++index) {
+        controller.select_media(index);
+        controller.handle(nxgallery::Action::Confirm);
+    }
+    controller.handle(nxgallery::Action::Share);
+    assert(controller.screen() == nxgallery::Screen::ChatPicker);
+    assert(controller.video_merge_available());
+    assert(!controller.video_merge_enabled());
+    controller.handle(nxgallery::Action::ToggleVideoMerge);
+    assert(controller.video_merge_enabled());
+    auto request = controller.handle(nxgallery::Action::Confirm);
+    assert(request && request->merge_videos);
+    assert(request->media.size() == 3);
+    assert(request->media[0].filename == "old.mp4");
+    assert(request->media[2].filename == "new.mp4");
+
+    std::vector<nxgallery::MediaItem> mixed{
+        {"a.mp4", "a.mp4", nxgallery::MediaKind::Video, 2, 1},
+        {"b.jpg", "b.jpg", nxgallery::MediaKind::Photo, 1, 1},
+    };
+    assert(nxgallery::video_merge_selection_error(mixed) ==
+           "Only videos can be merged");
+    mixed[1].kind = nxgallery::MediaKind::Video;
+    mixed[0].size = nxgallery::kMaximumMergedVideoBytes;
+    assert(nxgallery::video_merge_selection_error(mixed) ==
+           "Merged video would exceed the 48 MiB Telegram limit");
 }
 
 std::vector<nxgallery::MediaItem> batching_media(std::size_t count) {
@@ -505,6 +546,7 @@ void release_version_contract() {
 int main() {
     controller_flow();
     grid_multi_select_flow();
+    video_merge_selection_flow();
     telegram_batching_flow();
     telegram_batching_stops_on_failure();
     telegram_batching_uses_singleton_remainder();

@@ -1,4 +1,5 @@
 #include <nxgallery/gallery_controller.hpp>
+#include <nxgallery/video_merge.hpp>
 
 #include <algorithm>
 #include <utility>
@@ -9,8 +10,26 @@ void GalleryController::set_media(std::vector<MediaItem> media) {
     media_ = std::move(media);
     selected_media_indices_.clear();
     multi_select_active_ = false;
+    video_merge_enabled_ = false;
     if (media_.empty()) media_index_ = 0;
     else media_index_ = std::min(media_index_, media_.size() - 1);
+}
+
+bool GalleryController::video_merge_available() const {
+    if (share_origin_ != Screen::Grid || !multi_select_active_ ||
+        selected_media_indices_.size() < 2) {
+        return false;
+    }
+    std::uint64_t total = 0;
+    for (const std::size_t index : selected_media_indices_) {
+        if (index >= media_.size() || media_[index].kind != MediaKind::Video ||
+            media_[index].size == 0 ||
+            media_[index].size > kMaximumMergedVideoBytes - total) {
+            return false;
+        }
+        total += media_[index].size;
+    }
+    return true;
 }
 
 void GalleryController::set_chats(std::vector<TelegramChat> chats) {
@@ -102,6 +121,7 @@ std::optional<ShareRequest> GalleryController::handle(Action action) {
         } else if (action == Action::Share && !media_.empty() &&
                    (!multi_select_active_ || !selected_media_indices_.empty())) {
             chat_index_ = 0;
+            video_merge_enabled_ = false;
             share_origin_ = Screen::Grid;
             screen_ = Screen::ChatPicker;
         }
@@ -113,6 +133,7 @@ std::optional<ShareRequest> GalleryController::handle(Action action) {
         else if (action == Action::Right && media_index_ + 1 < media_.size()) ++media_index_;
         else if (action == Action::Share) {
             chat_index_ = 0;
+            video_merge_enabled_ = false;
             share_origin_ = Screen::Viewer;
             screen_ = Screen::ChatPicker;
         }
@@ -120,12 +141,19 @@ std::optional<ShareRequest> GalleryController::handle(Action action) {
     }
     if (screen_ == Screen::ChatPicker) {
         move_chat(action);
-        if (action == Action::Back) screen_ = share_origin_;
+        if (action == Action::Back) {
+            video_merge_enabled_ = false;
+            screen_ = share_origin_;
+        } else if (action == Action::ToggleVideoMerge &&
+                   video_merge_available()) {
+            video_merge_enabled_ = !video_merge_enabled_;
+        }
         else if (action == Action::Confirm && !media_.empty() && !chats_.empty()) {
             std::vector<MediaItem> selected = media_for_share();
             if (selected.empty()) return std::nullopt;
             screen_ = Screen::Sending;
-            return ShareRequest{std::move(selected), chats_[chat_index_]};
+            return ShareRequest{std::move(selected), chats_[chat_index_],
+                                video_merge_enabled_};
         }
         return std::nullopt;
     }

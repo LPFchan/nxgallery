@@ -20,6 +20,8 @@ play captured videos, and share selected media to Telegram.
   and accelerated right-stick scrubbing with a seek preview.
 - Single-capture and ordered multi-select sharing through the Telegram Bot API.
   Larger selections are delivered sequentially in batches of up to ten.
+- Optional lossless merging of compatible multi-selected videos into one MP4,
+  with a 48 MiB output ceiling for the public Telegram Bot API.
 - Local-network QR onboarding, manual bot configuration, and cached Telegram
   destinations.
 - Whole-selection transfer progress with cancellation.
@@ -67,7 +69,7 @@ configuration file so it always appears.
 | --- | --- | --- |
 | Grid | D-pad or left stick navigates; A opens; X shares; Y groups by date; Plus starts or finishes multi-select. In multi-select, A marks captures. | Drag to scroll, tap a capture to open it, or tap the visible View, Share, Group, Select, and Update actions. |
 | Viewer | D-pad or left stick changes capture; A plays or pauses video; hold the right stick left or right to preview an accelerated scrub, then release to seek; X shares; B returns. | Swipe horizontally to browse, tap the video to play or pause, or use the visible actions. |
-| Chat picker | Up/down selects; A sends; Y refreshes destinations; Plus opens Bot Setup; B closes the picker. | Tap a destination, then use Back, Refresh, or Send. |
+| Chat picker | Up/down selects; X toggles lossless video merging when the selection is eligible; A sends; Y refreshes destinations; Plus opens Bot Setup; B closes the picker. | Tap a destination, then use Back, Merge, Refresh, or Send. |
 | Sending | B requests cancellation. | Tap Cancel. |
 
 ## Updates
@@ -89,7 +91,8 @@ make host-test
 ```
 
 A Switch build requires devkitA64, staged Plutonium, curl, OpenSSL, and an
-FFmpeg 7.1 prefix with H.264 and AAC decoding enabled. The repository includes
+FFmpeg 7.1 prefix with H.264 and AAC decoding plus MOV/MP4 muxing enabled. The
+repository includes
 [`scripts/build-switch-ffmpeg.sh`](scripts/build-switch-ffmpeg.sh) to create the
 playback prefix:
 
@@ -109,4 +112,5 @@ export PLAYBACK_PREFIX=/path/to/ffmpeg-prefix
 make -j4 APP_VERSION=0.1.7
 ```
 
-The build rejects a playback prefix that does not register the AAC decoder.
+The build rejects a playback prefix that does not register the AAC decoder or
+the MOV/MP4 muxer.
