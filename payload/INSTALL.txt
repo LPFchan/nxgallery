@@ -1,6 +1,6 @@
 NX Gallery prototype installation
 
-1. Copy the archive's switch/nxgallery directory to the SD card's /switch directory.
+1. Copy nxgallery.nro to /switch/nxgallery/nxgallery.nro on the SD card.
 2. Launch NX Gallery from the Homebrew Menu with full memory access.
 3. If NX Torrent is not already configured, follow the full-screen QR setup.
 4. Alternatively, rename telegram-bot.conf.example to telegram-bot.conf, replace the placeholder token, and optionally add chat=ID|Title lines for destinations that should always appear.
