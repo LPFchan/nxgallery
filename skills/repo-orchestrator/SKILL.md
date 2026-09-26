@@ -99,4 +99,3 @@ Escalate instead of guessing when the work:
 - clear provenance
 - clean separation of layers
 - reusable artifacts instead of external-tool-only outcomes
-

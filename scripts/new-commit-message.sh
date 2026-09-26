@@ -161,4 +161,3 @@ printf 'Next steps:\n'
 printf '  1. Edit the TODO bullets in %s\n' "$OUTPUT"
 printf '  2. Validate it: sh scripts/check-commit-standards.sh %s\n' "$OUTPUT"
 printf '  3. Commit with: git commit -F %s\n' "$OUTPUT"
-

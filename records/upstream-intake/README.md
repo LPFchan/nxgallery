@@ -44,4 +44,3 @@ Remove the directory or leave it dormant.
 ## If Your Agent Environment Supports Skills
 
 Keep any procedural skill or workflow outside the scaffold and point it back to this directory instead of duplicating its rules.
-

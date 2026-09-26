@@ -80,4 +80,3 @@ Escalate instead of guessing when the change:
 - explicit compatibility details
 - clear autonomous-vs-operator split
 - recommendations grounded in current fork policy and architecture
-

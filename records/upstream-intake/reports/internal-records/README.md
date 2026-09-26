@@ -148,4 +148,3 @@ Example:
 - Related upstream work to watch: any follow-up changes to error schema documentation
 - Follow-up tasks: open implementation ticket for adapter passthrough update
 ```
-

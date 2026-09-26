@@ -8,4 +8,3 @@ chmod +x "$repo_root/.githooks/prepare-commit-msg" "$repo_root/.githooks/commit-
 
 echo "Configured git hooks for $repo_root"
 echo "Active hooks path: .githooks"
-

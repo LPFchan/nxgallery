@@ -86,4 +86,3 @@ Escalate instead of guessing when:
 - never bypass the validator for a normal commit
 - keep `changes:`, `rationale:`, and `checks:` concrete and auditable
 - treat the script as the generator and the checker as the gate
-

@@ -91,4 +91,3 @@ current_role=$(trailer_value "role")
 
 [ "$current_role" = "$registered_role" ] ||
   fail "the role trailer does not match the generated skeleton for $log_id; regenerate with --role if needed"
-

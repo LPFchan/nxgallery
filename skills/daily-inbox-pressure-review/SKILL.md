@@ -67,4 +67,3 @@ It should not produce a giant digest of every captured idea.
 - preserved provenance
 - clear route/research/plan/discard/leave outcomes
 - no direct truth-doc updates from raw inbox pressure
-

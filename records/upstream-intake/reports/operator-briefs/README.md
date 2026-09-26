@@ -52,4 +52,3 @@ This was safe to decide autonomously because the change clarifies an existing be
 - Why this was safe to decide: no product-policy or operator-workflow change
 - Next: update local wrappers, add one passthrough test, and note the compatibility detail in the next sync summary
 ```
-

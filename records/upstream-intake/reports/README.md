@@ -37,4 +37,3 @@ Each review should leave behind:
 The child directory `README.md` files include the canonical example shapes to imitate.
 
 Do not store one-off chat summaries here unless they have been normalized into the intake format.
-

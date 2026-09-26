@@ -338,4 +338,3 @@ if [ -n "$artifacts_value" ]; then
 fi
 
 check_primary_id_uniqueness "$primary_commit_id"
-
