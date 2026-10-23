@@ -87,7 +87,11 @@ bool ensure_https_ca_file() noexcept {
     return complete;
 }
 
-HttpsTrustStatus preflight_https_ca_file() noexcept { return preflight_https_ca_file(kHttpsCaFile, load_with_openssl); }
+// A bundle that could not be refreshed may still trust revoked roots.
+HttpsTrustStatus preflight_https_ca_file() noexcept {
+    if (!ca_file_matches_embedded()) return HttpsTrustStatus::Stale;
+    return preflight_https_ca_file(kHttpsCaFile, load_with_openssl);
+}
 #endif
 
 const char *https_trust_diagnostic(HttpsTrustStatus status) noexcept {
@@ -99,6 +103,7 @@ const char *https_trust_diagnostic(HttpsTrustStatus status) noexcept {
         case HttpsTrustStatus::TooLarge: return "Telegram unavailable: CA bundle is too large";
         case HttpsTrustStatus::Unreadable: return "Telegram unavailable: CA bundle cannot be read";
         case HttpsTrustStatus::Invalid: return "Telegram unavailable: CA bundle is invalid";
+        case HttpsTrustStatus::Stale: return "Telegram unavailable: CA bundle could not be updated";
     }
     return "Telegram HTTPS preflight failed";
 }
