@@ -1,5 +1,6 @@
 #include <nxgallery/https_trust.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdio>
@@ -23,6 +24,24 @@ bool load_with_openssl(const char *path) noexcept {
     SSL_CTX_free(context);
     ERR_clear_error();
     return loaded;
+}
+
+bool ca_file_matches_embedded() noexcept {
+    std::FILE *input = std::fopen(kHttpsCaFile, "rb");
+    if (input == nullptr) return false;
+    std::array<unsigned char, 4096> buffer{};
+    std::size_t offset = 0;
+    bool same = true;
+    while (same) {
+        const std::size_t read = std::fread(buffer.data(), 1, buffer.size(), input);
+        if (read == 0) break;
+        same = offset + read <= cert_pem_size &&
+               std::equal(buffer.begin(), buffer.begin() + read, cert_pem + offset);
+        offset += read;
+    }
+    same = same && offset == cert_pem_size && std::ferror(input) == 0;
+    std::fclose(input);
+    return same;
 }
 #endif
 
@@ -53,11 +72,9 @@ HttpsTrustStatus preflight_https_ca_file(const char *path, HttpsCaLoader loader)
 }
 
 #ifndef NXGALLERY_HOST_TEST
+// Rewrites a stale bundle so in-app updates also refresh the trusted roots.
 bool ensure_https_ca_file() noexcept {
-    struct stat status {};
-    if (stat(kHttpsCaFile, &status) == 0 && S_ISREG(status.st_mode) && status.st_size > 0) {
-        return true;
-    }
+    if (ca_file_matches_embedded()) return true;
     if (mkdir("sdmc:/switch/nxgallery", 0777) != 0 && errno != EEXIST) return false;
     if (mkdir("sdmc:/switch/nxgallery/openssl", 0777) != 0 && errno != EEXIST) return false;
     std::FILE *output = std::fopen(kHttpsCaFile, "wb");
@@ -70,7 +87,11 @@ bool ensure_https_ca_file() noexcept {
     return complete;
 }
 
-HttpsTrustStatus preflight_https_ca_file() noexcept { return preflight_https_ca_file(kHttpsCaFile, load_with_openssl); }
+// A bundle that could not be refreshed may still trust revoked roots.
+HttpsTrustStatus preflight_https_ca_file() noexcept {
+    if (!ca_file_matches_embedded()) return HttpsTrustStatus::Stale;
+    return preflight_https_ca_file(kHttpsCaFile, load_with_openssl);
+}
 #endif
 
 const char *https_trust_diagnostic(HttpsTrustStatus status) noexcept {
@@ -82,6 +103,7 @@ const char *https_trust_diagnostic(HttpsTrustStatus status) noexcept {
         case HttpsTrustStatus::TooLarge: return "Telegram unavailable: CA bundle is too large";
         case HttpsTrustStatus::Unreadable: return "Telegram unavailable: CA bundle cannot be read";
         case HttpsTrustStatus::Invalid: return "Telegram unavailable: CA bundle is invalid";
+        case HttpsTrustStatus::Stale: return "Telegram unavailable: CA bundle could not be updated";
     }
     return "Telegram HTTPS preflight failed";
 }
