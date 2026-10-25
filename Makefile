@@ -11,6 +11,8 @@ $(error PLUTONIUM_PREFIX is not set. Point it at a staged Plutonium prefix.)
 endif
 
 TOPDIR ?= $(CURDIR)
+# Set before switch_rules, which otherwise defaults APP_VERSION to 1.0.0.
+APP_VERSION ?= 0.1.7
 include $(DEVKITPRO)/libnx/switch_rules
 
 TARGET      := nxgallery
@@ -35,7 +37,6 @@ endif
 endif
 APP_TITLE   := NX Gallery
 APP_AUTHOR  := LPFchan
-APP_VERSION ?= 0.1.7
 APP_ICON    := $(CURDIR)/icon.jpg
 
 ARCH     := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -ftls-model=local-exec -fPIE
