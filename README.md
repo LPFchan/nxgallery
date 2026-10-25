@@ -91,25 +91,21 @@ make host-test
 ```
 
 A Switch build requires devkitA64, staged Plutonium, curl, OpenSSL, and an
-FFmpeg 7.1 prefix with H.264 and AAC decoding plus MOV/MP4 muxing enabled. The
-repository includes
-[`scripts/build-switch-ffmpeg.sh`](scripts/build-switch-ffmpeg.sh) to create the
-playback prefix:
+FFmpeg 7.1 prefix with H.264 and AAC decoding plus MOV/MP4 muxing enabled.
+`grimoire` is the build host. `scripts/switch-docker.sh` runs the devkitA64 r30
+toolchain in Docker with the shared prefixes in `~/.local/share/switch-deps`
+and sets the prefix variables the Makefile needs. OpenSSL and Plutonium come
+from NX Torrent's `scripts/build-switch-deps.sh`; build the FFmpeg playback
+prefix once with
+[`scripts/build-switch-ffmpeg.sh`](scripts/build-switch-ffmpeg.sh):
 
 ```sh
-export DEVKITPRO=/opt/devkitpro
-export DEVKITA64="$DEVKITPRO/devkitA64"
-export PORTLIBS="$DEVKITPRO/portlibs/switch"
-export PLUTONIUM_PREFIX=/path/to/staged/plutonium
-export SWITCH_CURL_PREFIX=/path/to/staged/switch-curl
-export SWITCH_OPENSSL_PREFIX=/path/to/staged/switch-openssl
-export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
+deps=$HOME/.local/share/switch-deps
+curl -fsSL https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz | tar -xJ -C "$deps/src"
+sh scripts/switch-docker.sh sh scripts/build-switch-ffmpeg.sh \
+  "$deps/src/ffmpeg-7.1" "$deps/build/ffmpeg" "$deps/prefix/ffmpeg"
 
-scripts/build-switch-ffmpeg.sh \
-  /path/to/ffmpeg-7.1 /path/to/ffmpeg-build /path/to/ffmpeg-prefix
-export PLAYBACK_PREFIX=/path/to/ffmpeg-prefix
-
-make -j4 APP_VERSION=0.1.7
+sh scripts/switch-docker.sh make -j8
 ```
 
 The build rejects a playback prefix that does not register the AAC decoder or
