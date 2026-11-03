@@ -350,10 +350,6 @@ void telegram_batching_stops_on_cancellation() {
 
 void grid_boundaries() {
     nxgallery::GalleryController controller;
-    for (int index = 0; index < 14; ++index) {
-        auto items = controller.media();
-        (void)items;
-    }
     std::vector<nxgallery::MediaItem> media;
     for (int index = 0; index < 14; ++index) {
         media.push_back({std::to_string(index) + ".jpg", std::to_string(index), nxgallery::MediaKind::Photo, index, 1});
